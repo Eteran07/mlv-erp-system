@@ -1,0 +1,10 @@
+# Entornos virtuales
+venv/
+__pycache__/
+
+# Variables de entorno y secretos (¡CRÍTICO: NUNCA SUBIR!)
+.env
+tokens_ml.json
+
+# Archivos de Excel / Datos locales
+inventario.xlsx
