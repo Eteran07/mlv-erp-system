@@ -6,16 +6,22 @@ from dotenv import load_dotenv
 load_dotenv()
 APP_ID = os.getenv("ML_APP_ID")
 CLIENT_SECRET = os.getenv("ML_CLIENT_SECRET")
-REDIRECT_URI = os.getenv("ML_REDIRECT_URI")
+
+# Forzamos tu URI real para evitar errores del archivo .env
+REDIRECT_URI = "https://mlvsystem.com"
 
 def obtener_autorizacion():
     print("=== PASO 1: AUTORIZACIÓN ===")
     url_auth = f"https://auth.mercadolibre.com.ve/authorization?response_type=code&client_id={APP_ID}&redirect_uri={REDIRECT_URI}"
-    print("1. Haz Ctrl + Clic en este enlace e inicia sesión con la cuenta de ML Venezuela:\n")
-    print(f"{url_auth}\n")
-    print("2. La página final dará error de conexión (es el plan). Copia el código de la URL que está después de 'code='.")
     
-    codigo = input("\nPega el código aquí y presiona Enter: ").strip()
+    print("1. Abre tu navegador (recomendado en Incógnito).")
+    print("2. Inicia sesión con la cuenta de Mercado Libre que quieres vincular.")
+    print("3. Copia y pega el siguiente enlace en ese navegador:\n")
+    print(f"{url_auth}\n")
+    print("4. Mercado Libre te redirigirá a tu página web (https://mlvsystem.com).")
+    print("5. Copia el código de la URL que está después de '?code=' (empieza con TG-).")
+    
+    codigo = input("\nPega el código TG- aquí y presiona Enter: ").strip()
     return codigo
 
 def canjear_token(codigo):
@@ -35,9 +41,17 @@ def canjear_token(codigo):
 
     response = requests.post(url, headers=headers, data=data)
     if response.status_code == 200:
-        with open("tokens_ml.json", "w") as f:
+        print("\n✅ ¡Conexión Exitosa con Mercado Libre!")
+        
+        # EL SISTEMA AHORA TE PREGUNTA EL NOMBRE PARA NO SOBREESCRIBIR
+        nombre_archivo = input("¿Con qué nombre deseas guardar esta cuenta? (ej. token_ventas.json): ").strip()
+        
+        if not nombre_archivo.endswith(".json"):
+            nombre_archivo += ".json"
+            
+        with open(nombre_archivo, "w") as f:
             f.write(response.text)
-        print("✅ ¡ÉXITO TOTAL! Tokens guardados en el archivo 'tokens_ml.json'.")
+        print(f"✅ ¡ÉXITO TOTAL! Tokens guardados en el archivo '{nombre_archivo}'.")
     else:
         print("❌ Error al canjear el token:")
         print(response.json())
