@@ -8,3 +8,8 @@ tokens_ml.json
 
 # Archivos de Excel / Datos locales
 inventario.xlsx
+
+# Tokens de acceso e información sensible
+token_*.json
+tokens_*.json
+*.env

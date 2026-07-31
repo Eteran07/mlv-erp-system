@@ -1,16 +1,17 @@
 import os
+import glob
 import json
 import base64
 import requests
 import pandas as pd
-import re  # NUEVA LIBRERÍA PARA EL BYPASS
+import re
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 from google import genai
 
 load_dotenv()
-app = FastAPI(title="ERP Mercado Libre - Control Maestro")
+app = FastAPI(title="ERP Mercado Libre - Multicuenta Maestro")
 
 try:
     cliente_ia = genai.Client()
@@ -27,9 +28,19 @@ BLOQUE_INFERIOR = """
 **************************************************************************************************
 """
 
-def obtener_token():
+def listar_archivos_token():
+    """Busca todos los archivos JSON que empiecen por 'token'."""
+    archivos = sorted(glob.glob("token*.json"))
+    return archivos if archivos else ["tokens_ml.json"]
+
+def obtener_nombre_cuenta(archivo_token):
+    """Extrae un nombre legible del archivo, ej: 'token_jesus.json' -> 'JESUS'."""
+    nombre = archivo_token.replace("token_", "").replace("tokens_", "").replace(".json", "").upper()
+    return nombre if nombre else "PRINCIPAL"
+
+def obtener_token(archivo_token):
     try:
-        with open("tokens_ml.json", "r") as archivo:
+        with open(archivo_token, "r") as archivo:
             return json.load(archivo).get("access_token")
     except FileNotFoundError:
         return None
@@ -89,28 +100,32 @@ def subir_foto_a_ml(base64_data, token):
         print(f"Error procesando imagen base64: {e}")
     return None
 
-# --- INTERFAZ HTML CON LISTAS DESPLEGABLES ---
+# --- INTERFAZ HTML INTERACTIVA ---
 HTML_INTERFACE = """
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>ERP Mercado Libre - Avanzado</title>
+    <title>ERP Mercado Libre - Multicuenta Maestro</title>
     <style>
         body { font-family: 'Segoe UI', sans-serif; background: #f0f2f5; margin: 0; padding: 20px; }
-        .container { max-width: 1500px; background: white; padding: 25px; border-radius: 12px; margin: auto; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
-        h1 { text-align: center; color: #333; }
-        .panel-control { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #ddd; }
+        .container { max-width: 1550px; background: white; padding: 25px; border-radius: 12px; margin: auto; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        h1 { text-align: center; color: #333; margin-bottom: 5px; }
+        .subtitle { text-align: center; color: #666; font-size: 14px; margin-bottom: 20px; }
+        
+        .panel-control { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr; gap: 15px; background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #ddd; }
         .control-group { display: flex; flex-direction: column; gap: 5px; }
-        label { font-weight: bold; font-size: 13px; color: #555; }
-        input[type="file"] { padding: 8px; border: 1px solid #ccc; border-radius: 4px; background: white; }
-        button { background: #007bff; color: white; border: none; padding: 10px; font-weight: bold; border-radius: 4px; cursor: pointer; transition: 0.2s; }
+        label { font-weight: bold; font-size: 13px; color: #444; }
+        input[type="file"], select { padding: 8px; border: 1px solid #ccc; border-radius: 4px; background: white; font-size: 13px; }
+        button { background: #007bff; color: white; border: none; padding: 11px; font-weight: bold; border-radius: 4px; cursor: pointer; transition: 0.2s; }
         button:hover { background: #0056b3; }
+        
         table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 15px; }
         th, td { border: 1px solid #ddd; padding: 8px; vertical-align: top;}
         th { background: #343a40; color: white; }
-        input[type="text"], input[type="number"], select { width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
-        .log-box { background: #1e1e1e; color: #00ff66; padding: 15px; height: 180px; overflow-y: auto; font-family: monospace; border-radius: 5px; margin-top: 20px; white-space: pre-wrap; font-size: 12px;}
+        input[type="text"], input[type="number"], select.attr-select { width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        
+        .log-box { background: #1e1e1e; color: #00ff66; padding: 15px; height: 200px; overflow-y: auto; font-family: monospace; border-radius: 5px; margin-top: 20px; white-space: pre-wrap; font-size: 12px;}
         
         .loading-zone { display: none; text-align: center; padding: 30px; background: #e9ecef; border-radius: 8px; margin-bottom: 20px; border: 2px dashed #007bff; }
         .loader { border: 5px solid #f3f3f3; border-top: 5px solid #007bff; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; margin: 0 auto 15px auto; }
@@ -121,40 +136,46 @@ HTML_INTERFACE = """
         .photo-manager input[type="file"] { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
         .preview-container { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; justify-content: center; }
         .preview-container img { width: 45px; height: 45px; object-fit: cover; border-radius: 4px; border: 1px solid #ccc; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .badge { display: inline-block; padding: 3px 8px; border-radius: 12px; font-size: 11px; font-weight: bold; background: #e3f2fd; color: #0d47a1; margin-left: 5px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>⚙️ ERP Mercado Libre - Control Maestro</h1>
+        <h1>⚙️ ERP Mercado Libre - Multicuenta Maestro</h1>
+        <div class="subtitle">Gestiona y publica en tus perfiles de Jesús, Rafael o en múltiples cuentas a la vez</div>
         
         <div class="panel-control">
             <div class="control-group">
-                <label>1. Sube Inventario (.xlsx o .csv):</label>
+                <label>1. Perfil / Cuenta Destino:</label>
+                <select id="cuenta-select"></select>
+            </div>
+            <div class="control-group">
+                <label>2. Inventario (.xlsx / .csv):</label>
                 <input type="file" id="file-db" accept=".xlsx, .csv">
             </div>
             <div class="control-group">
-                <label>2. Rango de filas a analizar:</label>
-                <div style="display: flex; gap: 10px;">
+                <label>3. Rango de filas:</label>
+                <div style="display: flex; gap: 8px;">
                     <input type="number" id="rango-inicio" value="1" placeholder="Desde" style="width: 50%;">
                     <input type="number" id="rango-fin" value="100" placeholder="Hasta" style="width: 50%;">
                 </div>
             </div>
             <div class="control-group">
-                <label>3. Filtro Inteligente:</label>
-                <div style="display: flex; align-items: center; gap: 5px; margin-top: 5px;">
+                <label>4. Filtro Inteligente:</label>
+                <div style="display: flex; align-items: center; gap: 5px; margin-top: 6px;">
                     <input type="checkbox" id="filtar-duplicados" checked>
                     <span style="font-size: 12px; color: #444;">Ocultar ya publicados</span>
                 </div>
             </div>
-            <div class="control-group" style="grid-column: span 3;">
-                <button onclick="cargarInventario()" style="width: 100%; font-size: 16px;">Generar Previsualización</button>
+            <div class="control-group" style="grid-column: span 4;">
+                <button onclick="cargarInventario()" style="width: 100%; font-size: 15px;">🔍 Generar Previsualización en Tabla</button>
             </div>
         </div>
 
         <div id="loading" class="loading-zone">
             <div class="loader"></div>
             <h2 id="loading-text" style="margin:0; color:#333;">Procesando datos...</h2>
-            <p style="color:#666;">Dependiendo del rango que elegiste, esto tomará unos segundos.</p>
+            <p style="color:#666;">Estamos consultando las categorías y verificando duplicados en Mercado Libre.</p>
         </div>
 
         <div id="tabla-container" style="display: none;">
@@ -164,22 +185,36 @@ HTML_INTERFACE = """
                         <th style="width: 30px;"><input type="checkbox" checked onclick="toggleAll(this)"></th>
                         <th style="width: 20%;">Título (Max 60)</th>
                         <th style="width: 8%;">Precio $</th>
-                        <th style="width: 8%;">Stock</th>
+                        <th style="width: 7%;">Stock</th>
                         <th style="width: 12%;">Categoría ML</th>
-                        <th style="width: 15%;">Atributos (Marca / Modelo / Código)</th>
+                        <th style="width: 18%;">Atributos (Marca / Modelo / GTIN)</th>
                         <th style="width: 25%;">Gestor de Fotos</th>
                     </tr>
                 </thead>
                 <tbody id="tabla-body"></tbody>
             </table>
-            <button onclick="ejecutarPublicacion()" style="background: #28a745; width: 100%; margin-top: 20px; padding: 15px; font-size: 16px;">🚀 Publicar Lote Seleccionado</button>
+            <button onclick="ejecutarPublicacion()" style="background: #28a745; width: 100%; margin-top: 20px; padding: 16px; font-size: 16px;">🚀 Confirmar y Publicar Lote</button>
         </div>
 
-        <div id="resultados" class="log-box">Esperando carga de datos...</div>
+        <div id="resultados" class="log-box">Esperando selección de cuenta e inventario...</div>
     </div>
 
     <script>
         const imagenesPorFila = {};
+
+        // Cargar perfiles disponibles dinámicamente al abrir el navegador
+        window.onload = async () => {
+            const res = await fetch('/cuentas');
+            const cuentas = await res.json();
+            const select = document.getElementById('cuenta-select');
+            select.innerHTML = "";
+            cuentas.forEach(c => {
+                select.innerHTML += `<option value="${c.archivo}">${c.nombre} (${c.archivo})</option>`;
+            });
+            if (cuentas.length > 1) {
+                select.innerHTML += `<option value="TODAS" style="font-weight:bold; color:#0d47a1;">🚀 PUBLICAR EN TODAS LAS CUENTAS SIMULTÁNEAMENTE</option>`;
+            }
+        };
 
         function procesarArchivos(inputElement, idx) {
             const files = inputElement.files;
@@ -208,11 +243,7 @@ HTML_INTERFACE = """
         function toggleGtin(idx) {
             const selectVal = document.getElementById('gtin-razon-'+idx).value;
             const inputField = document.getElementById('gtin-'+idx);
-            if (selectVal === 'CUSTOM') {
-                inputField.style.display = 'block';
-            } else {
-                inputField.style.display = 'none';
-            }
+            inputField.style.display = (selectVal === 'CUSTOM') ? 'block' : 'none';
         }
 
         async function cargarInventario() {
@@ -221,16 +252,17 @@ HTML_INTERFACE = """
 
             const formData = new FormData();
             formData.append('file', fileInput.files[0]);
+            formData.append('cuenta', document.getElementById('cuenta-select').value);
             formData.append('inicio', document.getElementById('rango-inicio').value);
             formData.append('fin', document.getElementById('rango-fin').value);
             formData.append('filtrar_duplicados', document.getElementById('filtar-duplicados').checked);
 
             document.getElementById('tabla-container').style.display = 'none';
             document.getElementById('loading').style.display = 'block';
-            document.getElementById('loading-text').innerText = "Buscando categorías...";
+            document.getElementById('loading-text').innerText = "Analizando inventario y consultando con Mercado Libre...";
             
             const consola = document.getElementById('resultados');
-            consola.innerText = "⏳ Consultando con Mercado Libre...";
+            consola.innerText = "⏳ Conectando con las APIs de Mercado Libre...";
 
             try {
                 const response = await fetch('/previsualizar', { method: 'POST', body: formData });
@@ -243,7 +275,7 @@ HTML_INTERFACE = """
                 tbody.innerHTML = "";
 
                 if (resultado.productos.length === 0) {
-                    consola.innerText = "⚠️ No hay productos en este rango.";
+                    consola.innerText = "⚠️ No hay productos disponibles en este rango (o todos ya fueron publicados en el perfil seleccionado).";
                     return;
                 }
 
@@ -271,7 +303,7 @@ HTML_INTERFACE = """
                                 <input type="text" id="mar-${idx}" value="${prod.Marca}" placeholder="Marca" style="margin-bottom:4px;" title="Marca">
                                 <input type="text" id="mod-${idx}" value="${prod.Modelo}" placeholder="Modelo" style="margin-bottom:4px;" title="Modelo">
                                 
-                                <select id="gtin-razon-${idx}" onchange="toggleGtin(${idx})" style="margin-bottom:4px; font-size:11px; font-weight:bold;">
+                                <select id="gtin-razon-${idx}" class="attr-select" onchange="toggleGtin(${idx})" style="margin-bottom:4px; font-size:11px; font-weight:bold;">
                                     <option value="CUSTOM" ${selectCustom}>Ingresar Código (GTIN)</option>
                                     <option value="OMITIR" ${selectOmit}>Este producto no posee código</option>
                                 </select>
@@ -288,7 +320,7 @@ HTML_INTERFACE = """
                     `;
                 });
                 document.getElementById('tabla-container').style.display = 'block';
-                consola.innerText = `✅ ¡Listo! Puedes revisar y editar.`;
+                consola.innerText = `✅ ¡Listo! ${resultado.productos.length} artículos en pantalla. Selecciona o arrastra tus fotos antes de publicar.`;
             } catch(e) {
                 document.getElementById('loading').style.display = 'none';
                 consola.innerText = "❌ Error: " + e;
@@ -324,13 +356,20 @@ HTML_INTERFACE = """
 
             if (!seleccionados.length) return alert('No hay artículos seleccionados.');
 
+            const cuentaSeleccionada = document.getElementById('cuenta-select').value;
+            const nombreCuentaText = document.getElementById('cuenta-select').options[document.getElementById('cuenta-select').selectedIndex].text;
+
+            if (!confirm(`¿Confirmas publicar ${seleccionados.length} artículos en el perfil: ${nombreCuentaText}?`)) {
+                return;
+            }
+
             document.getElementById('loading').style.display = 'block';
-            document.getElementById('loading-text').innerText = "Subiendo fotos y armando publicaciones...";
+            document.getElementById('loading-text').innerText = "Subiendo fotos HD y creando publicaciones...";
             const consola = document.getElementById('resultados');
-            consola.innerText = "🚀 Iniciando publicación. Aplicando protocolos de Bypass si es necesario...";
+            consola.innerText = `🚀 Publicando en ${nombreCuentaText}... Por favor espera.`;
 
             try {
-                const response = await fetch(`/publicar-lote`, {
+                const response = await fetch(`/publicar-lote?cuenta=${cuentaSeleccionada}`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(seleccionados)
                 });
@@ -347,6 +386,11 @@ HTML_INTERFACE = """
 </html>
 """
 
+@app.get("/cuentas")
+def obtener_cuentas():
+    archivos = listar_archivos_token()
+    return [{"archivo": a, "nombre": obtener_nombre_cuenta(a)} for a in archivos]
+
 @app.get("/", response_class=HTMLResponse)
 def home():
     return HTML_INTERFACE
@@ -354,6 +398,7 @@ def home():
 @app.post("/previsualizar")
 async def previsualizar_archivo(
     file: UploadFile = File(...), 
+    cuenta: str = Form(...),
     inicio: int = Form(1),
     fin: int = Form(100),
     filtrar_duplicados: str = Form("true")
@@ -361,8 +406,20 @@ async def previsualizar_archivo(
     temp_filename = f"temp_{file.filename}"
     with open(temp_filename, "wb") as buffer: buffer.write(await file.read())
 
-    token = obtener_token()
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"} if token else {}
+    # Determinar qué cuentas escanear para duplicados
+    archivos_a_escanear = listar_archivos_token() if cuenta == "TODAS" else [cuenta]
+    titulos_existentes = set()
+
+    if filtrar_duplicados == "true":
+        for arch in archivos_a_escanear:
+            token = obtener_token(arch)
+            if token:
+                headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                titulos_existentes.update(obtener_titulos_publicados(headers))
+
+    # Obtener token referencial para consultar categorías
+    token_ref = obtener_token(archivos_a_escanear[0])
+    headers_ref = {"Authorization": f"Bearer {token_ref}", "Content-Type": "application/json"} if token_ref else {}
 
     try:
         if temp_filename.lower().endswith('.csv'):
@@ -375,10 +432,6 @@ async def previsualizar_archivo(
 
     idx_inicio = max(0, inicio - 1)
     df_rango = df.iloc[idx_inicio:fin]
-
-    titulos_existentes = set()
-    if filtrar_duplicados == "true" and token:
-        titulos_existentes = obtener_titulos_publicados(headers)
 
     productos_procesados = []
     cache_categorias = {}
@@ -399,11 +452,11 @@ async def previsualizar_archivo(
         if gtin.lower() == 'nan' or gtin == '': 
             gtin = 'N/A'
         
-        if token:
+        if token_ref:
             if titulo in cache_categorias:
                 cat_id = cache_categorias[titulo]
             else:
-                cat_id = adivinar_categoria(titulo, headers)
+                cat_id = adivinar_categoria(titulo, headers_ref)
                 cache_categorias[titulo] = cat_id
         else:
             cat_id = "MLV-DESCONOCIDA"
@@ -417,90 +470,101 @@ async def previsualizar_archivo(
     return {"productos": productos_procesados}
 
 @app.post("/publicar-lote")
-async def publicar_lote(productos: list[dict]):
-    token = obtener_token()
-    if not token: return {"detalles": ["❌ Error: Token de ML no válido."]}
+async def publicar_lote(productos: list[dict], cuenta: str = "token_jesus.json"):
+    archivos_destino = listar_archivos_token() if cuenta == "TODAS" else [cuenta]
+    logs_totales = []
 
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    logs = []
-
-    for prod in productos:
-        titulo_original = prod['Titulo'][:60].strip()
-        titulo_x3 = f"{titulo_original}\n{titulo_original}\n{titulo_original}\n"
-        parrafo_dinamico = redactar_parrafo(titulo_original)
-        descripcion_completa = f"{BLOQUE_SUPERIOR}\n{titulo_x3}\n{parrafo_dinamico}\n{BLOQUE_INFERIOR}"
-
-        datos_publicacion = {
-            "title": titulo_original,
-            "category_id": prod['Categoria_ID'],
-            "price": prod['Precio'],
-            "currency_id": "USD",
-            "available_quantity": prod['Stock'],
-            "buying_mode": "buy_it_now",
-            "condition": "new",
-            "listing_type_id": "bronze",
-            "attributes": [
-                {"id": "BRAND", "value_name": prod['Marca']},
-                {"id": "MODEL", "value_name": prod['Modelo']}
-            ]
-        }
-
-        gtin_val = prod.get('GTIN', 'OMITIR').strip()
-        if gtin_val != 'OMITIR' and gtin_val:
-            datos_publicacion["attributes"].append({"id": "GTIN", "value_name": gtin_val})
-
-        fotos_payload = []
-        if prod.get('ImagenesB64'):
-            for img_b64 in prod['ImagenesB64']:
-                pic_id = subir_foto_a_ml(img_b64, token)
-                if pic_id:
-                    fotos_payload.append({"id": pic_id})
+    for arch_token in archivos_destino:
+        token = obtener_token(arch_token)
+        nombre_perfil = obtener_nombre_cuenta(arch_token)
         
-        if fotos_payload:
-            datos_publicacion["pictures"] = fotos_payload
+        if not token:
+            logs_totales.append(f"❌ [{nombre_perfil}] Error: Token no válido.")
+            continue
 
-        # Primer intento de publicación
-        respuesta = requests.post("https://api.mercadolibre.com/items", headers=headers, json=datos_publicacion)
-        
-        if respuesta.status_code == 201:
-            item_data = respuesta.json()
-            item_id = item_data.get('id')
-            permalink = item_data.get('permalink')
-            requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json={"text": descripcion_completa})
-            logs.append(f"✅ ¡PUBLICADO! -> {permalink}")
-        else:
-            error_texto = respuesta.text
-            # 🛡️ MOTOR DE BYPASS AUTOMÁTICO
-            if "restrictions_coliving" in error_texto:
-                # Enmascaramos marcas famosas que activan el bot de ML
-                titulo_mascarado = re.sub(r'(?i)\b(canon|hp|epson|brother|samsung|apple|sony)\b', 'Compatible', titulo_original)
-                datos_publicacion["title"] = titulo_mascarado
-                
-                res_bypass = requests.post("https://api.mercadolibre.com/items", headers=headers, json=datos_publicacion)
-                
-                if res_bypass.status_code == 201:
-                    item_data = res_bypass.json()
-                    item_id = item_data.get('id')
-                    permalink = item_data.get('permalink')
-                    
-                    # Restauramos tu título original mediante una actualización silenciosa (PUT)
-                    requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json={"title": titulo_original})
-                    requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json={"text": descripcion_completa})
-                    
-                    logs.append(f"✅ ¡PUBLICADO (Bypass de Catálogo Exitoso)! -> {permalink}")
-                else:
-                    logs.append(f"❌ Error en '{titulo_original[:15]}...' incluso con bypass: {res_bypass.json().get('message')}")
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        for prod in productos:
+            titulo_original = prod['Titulo'][:60].strip()
+            titulo_x3 = f"{titulo_original}\n{titulo_original}\n{titulo_original}\n"
+            parrafo_dinamico = redactar_parrafo(titulo_original)
+            descripcion_completa = f"{BLOQUE_SUPERIOR}\n{titulo_x3}\n{parrafo_dinamico}\n{BLOQUE_INFERIOR}"
+
+            datos_publicacion = {
+                "title": titulo_original,
+                "category_id": prod['Categoria_ID'],
+                "price": prod['Precio'],
+                "currency_id": "USD",
+                "available_quantity": prod['Stock'],
+                "buying_mode": "buy_it_now",
+                "condition": "new",
+                "listing_type_id": "bronze",
+                "attributes": [
+                    {"id": "BRAND", "value_name": prod['Marca']},
+                    {"id": "MODEL", "value_name": prod['Modelo']}
+                ]
+            }
+
+            gtin_val = prod.get('GTIN', 'OMITIR').strip()
+            if gtin_val != 'OMITIR' and gtin_val:
+                datos_publicacion["attributes"].append({"id": "GTIN", "value_name": gtin_val})
+
+            fotos_payload = []
+            if prod.get('ImagenesB64'):
+                for img_b64 in prod['ImagenesB64']:
+                    pic_id = subir_foto_a_ml(img_b64, token)
+                    if pic_id:
+                        fotos_payload.append({"id": pic_id})
+            
+            if fotos_payload:
+                datos_publicacion["pictures"] = fotos_payload
+
+            # Primer intento de publicación
+            respuesta = requests.post("https://api.mercadolibre.com/items", headers=headers, json=datos_publicacion)
+            
+            if respuesta.status_code == 201:
+                item_data = respuesta.json()
+                item_id = item_data.get('id')
+                permalink = item_data.get('permalink')
+                requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json={"text": descripcion_completa})
+                logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO! -> {permalink}")
             else:
-                error_data = respuesta.json()
-                causas = error_data.get('cause', [])
-                detalles_list = []
-                if isinstance(causas, list) and len(causas) > 0:
-                    for c in causas:
-                        if isinstance(c, dict): detalles_list.append(c.get('message', str(c)))
-                        else: detalles_list.append(str(c))
-                    detalles = " | ".join(detalles_list)
+                error_texto = respuesta.text
+                # 🛡️ MOTOR DE BYPASS AUTOMÁTICO
+                if "restrictions_coliving" in error_texto:
+                    titulo_mascarado = re.sub(r'(?i)\b(canon|hp|epson|brother|samsung|apple|sony)\b', 'Compatible', titulo_original)
+                    datos_publicacion["title"] = titulo_mascarado
+                    
+                    res_bypass = requests.post("https://api.mercadolibre.com/items", headers=headers, json=datos_publicacion)
+                    
+                    if res_bypass.status_code == 201:
+                        item_data = res_bypass.json()
+                        item_id = item_data.get('id')
+                        permalink = item_data.get('permalink')
+                        
+                        requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json={"title": titulo_original})
+                        requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json={"text": descripcion_completa})
+                        
+                        logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO (Bypass Exitoso)! -> {permalink}")
+                    else:
+                        logs_totales.append(f"❌ [{nombre_perfil}] Error en '{titulo_original[:15]}...': {res_bypass.json().get('message')}")
                 else:
-                    detalles = str(error_data.get('message', 'Error desconocido'))
-                logs.append(f"❌ Error en '{titulo_original[:15]}...': {detalles}")
+                    error_data = respuesta.json()
+                    causas = error_data.get('cause', [])
+                    detalles_list = []
+                    if isinstance(causas, list) and len(causas) > 0:
+                        for c in causas:
+                            if isinstance(c, dict): detalles_list.append(c.get('message', str(c)))
+                            else: detalles_list.append(str(c))
+                        detalles = " | ".join(detalles_list)
+                    else:
+                        detalles = str(error_data.get('message', 'Error desconocido'))
+                    
+                    if "restrictions_coliving" in detalles:
+                        detalles = "ML exige publicar por Catálogo. Falta Código de Barras válido."
+                    elif "seller.unable_to_list" in detalles:
+                        detalles = "Tu cuenta tiene restricciones activas (Revisa facturas pendientes o límites en Mercado Libre)."
 
-    return {"detalles": logs}
+                    logs_totales.append(f"❌ [{nombre_perfil}] Error en '{titulo_original[:15]}...': {detalles}")
+
+    return {"detalles": logs_totales}
