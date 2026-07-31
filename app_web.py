@@ -30,6 +30,9 @@ PROGRESO_ACTUAL = {
     "activo": False
 }
 
+# --- CACHÉ PARA ESQUEMA DE ATRIBUTOS OFICIALES POR CATEGORÍA ---
+CACHE_ATRIBUTOS_CAT = {}
+
 BLOQUE_SUPERIOR = "SOMOS TIENDA FÍSICA, Empresa Mayorista Líder en el Mercado de la Computación Producto 100% de calidad\n"
 BLOQUE_INFERIOR = """
 .Por Favor Verifique la disponibilidad antes de ofertar
@@ -143,7 +146,84 @@ def subir_foto_a_ml(base64_data, token):
         print(f"Error procesando imagen base64: {e}")
     return None
 
-# --- INTERFAZ HTML CON EDICIÓN MASIVA DE CARACTERÍSTICAS ---
+# --- NUEVO MOTOR QUIRÚRGICO: MAPEO DE CARACTERÍSTICAS SEGÚN LA CATEGORÍA ---
+def construir_atributos_dinamicos(prod, headers):
+    """
+    Consulta la categoría en ML y mapea Color, Compatibilidad y Material
+    a los IDs exactos que esa categoría soporta para que nunca sean descartados.
+    """
+    atributos = [
+        {"id": "BRAND", "value_name": prod.get("Marca", "Generico")},
+        {"id": "MODEL", "value_name": prod.get("Modelo", "Universal")}
+    ]
+
+    sku = str(prod.get("SKU", "")).strip()
+    if sku and sku.lower() != "nan":
+        atributos.append({"id": "SELLER_SKU", "value_name": sku})
+        atributos.append({"id": "PART_NUMBER", "value_name": sku})
+
+    cat_id = prod.get("Categoria_ID")
+    esquema_cat = []
+
+    # Consulta a la API de Atributos de Categoria con caché
+    if cat_id in CACHE_ATRIBUTOS_CAT:
+        esquema_cat = CACHE_ATRIBUTOS_CAT[cat_id]
+    elif headers and cat_id:
+        try:
+            url_attr = f"https://api.mercadolibre.com/categories/{cat_id}/attributes"
+            res = requests.get(url_attr, headers=headers)
+            if res.status_code == 200:
+                esquema_cat = res.json()
+                CACHE_ATRIBUTOS_CAT[cat_id] = esquema_cat
+        except Exception:
+            esquema_cat = []
+
+    # Mapear Color
+    color_val = str(prod.get("Color", "")).strip()
+    if color_val and color_val.lower() != "nan":
+        id_color = "COLOR"
+        for attr in esquema_cat:
+            nombre_attr = attr.get("name", "").lower()
+            if "color" in nombre_attr or "tinta" in nombre_attr:
+                id_color = attr.get("id")
+                break
+        atributos.append({"id": id_color, "value_name": color_val})
+
+    # Mapear Compatibilidad / Modelos compatibles / Línea
+    compat_val = str(prod.get("Compatibilidad", "")).strip()
+    if compat_val and compat_val.lower() != "nan":
+        id_compat = "COMPATIBLE_MODELS"
+        encontrado = False
+        for attr in esquema_cat:
+            nombre_attr = attr.get("name", "").lower()
+            if any(palabra in nombre_attr for palabra in ["compatib", "modelos", "impresoras", "línea", "linea", "serie"]):
+                atributos.append({"id": attr.get("id"), "value_name": compat_val})
+                encontrado = True
+        if not encontrado:
+            atributos.append({"id": "COMPATIBLE_MODELS", "value_name": compat_val})
+            atributos.append({"id": "LINE", "value_name": compat_val})
+
+    # Mapear Material / Especificación / Tipo
+    mat_val = str(prod.get("Material", "")).strip()
+    if mat_val and mat_val.lower() != "nan":
+        id_mat = "MATERIAL"
+        for attr in esquema_cat:
+            nombre_attr = attr.get("name", "").lower()
+            if any(palabra in nombre_attr for palabra in ["material", "tipo", "rendimiento", "especificac"]):
+                id_mat = attr.get("id")
+                break
+        atributos.append({"id": id_mat, "value_name": mat_val})
+
+    # Validador y Sanitizador del GTIN (Código Universal)
+    gtin_val = str(prod.get("GTIN", "OMITIR")).strip()
+    if gtin_val != "OMITIR" and gtin_val and gtin_val.lower() != "nan":
+        gtin_solo_numeros = re.sub(r'\D', '', gtin_val)
+        if len(gtin_solo_numeros) >= 8:
+            atributos.append({"id": "GTIN", "value_name": gtin_solo_numeros})
+
+    return atributos
+
+# --- INTERFAZ HTML (EXACTAMENTE COMO TE GUSTA, SIN TOCAR FUNCIONES OPERATIVAS) ---
 HTML_INTERFACE = """
 <!DOCTYPE html>
 <html lang="es">
@@ -208,7 +288,7 @@ HTML_INTERFACE = """
 <body>
     <div class="container">
         <h1>⚙️ ERP Mercado Libre - Control Maestro</h1>
-        <div class="subtitle">Doble Blindaje: PUT de confirmación para Envío Gratis y Ficha Técnica visible en Descripción</div>
+        <div class="subtitle">Mapeo Dinámico de Atributos por Categoría, Llenado Masivo y Envío Gratis Operativo</div>
         
         <div class="panel-control">
             <div class="control-group">
@@ -701,7 +781,7 @@ HTML_INTERFACE = """
 
             iniciarMonitoreoProgreso();
             const consola = document.getElementById('resultados');
-            consola.innerText = `🚀 Publicando lote... Aplicando Doble Blindaje de Envío Gratis y Ficha Técnica.`;
+            consola.innerText = `🚀 Publicando lote... Mapeando características dinámicamente con la API de Mercado Libre.`;
 
             try {
                 const response = await fetch(`/publicar-lote?cuenta=${cuentaSeleccionada}`, {
@@ -869,43 +949,12 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
             else:
                 cuerpo_desc = redactar_parrafo_base(titulo_original)
             
-            # BLINDAJE INCRUSTADO: FICHA TÉCNICA VISIBLE EN LA DESCRIPCIÓN
-            bloque_ficha = f"""
-==================================================================
-FICHA TÉCNICA DEL PRODUCTO:
-- MARCA: {prod['Marca']}
-- MODELO: {prod['Modelo']}
-- NRO. DE PARTE / SKU: {prod.get('SKU', 'N/A')}
-- COLOR / ESPECIFICACIÓN: {prod.get('Color', 'N/A')}
-- COMPATIBILIDAD / LÍNEA: {prod.get('Compatibilidad', 'N/A')}
-- MATERIAL / TIPO: {prod.get('Material', 'N/A')}
-==================================================================
-"""
-            descripcion_estructurada = f"{BLOQUE_SUPERIOR}\n{titulo_x3}\n{bloque_ficha}\n{cuerpo_desc}\n{BLOQUE_INFERIOR}"
+            descripcion_estructurada = f"{BLOQUE_SUPERIOR}\n{titulo_x3}\n{cuerpo_desc}\n{BLOQUE_INFERIOR}"
 
-            # CONFIGURACIÓN DE ATRIBUTOS MÚLTIPLES PARA MERCADO LIBRE
-            atributos_payload = [
-                {"id": "BRAND", "value_name": prod['Marca']},
-                {"id": "MODEL", "value_name": prod['Modelo']}
-            ]
-            if prod.get('SKU'):
-                atributos_payload.append({"id": "SELLER_SKU", "value_name": str(prod['SKU']).strip()})
-                atributos_payload.append({"id": "PART_NUMBER", "value_name": str(prod['SKU']).strip()})
-            if prod.get('Color'):
-                atributos_payload.append({"id": "COLOR", "value_name": str(prod['Color']).strip()})
-            if prod.get('Compatibilidad'):
-                atributos_payload.append({"id": "COMPATIBLE_MODELS", "value_name": str(prod['Compatibilidad']).strip()})
-                atributos_payload.append({"id": "LINE", "value_name": str(prod['Compatibilidad']).strip()})
-            if prod.get('Material'):
-                atributos_payload.append({"id": "MATERIAL", "value_name": str(prod['Material']).strip()})
+            # --- LLAMAMOS AL MAPEADOR DINÁMICO DE ATRIBUTOS ---
+            atributos_payload = construir_atributos_dinamicos(prod, headers)
 
-            gtin_val = prod.get('GTIN', 'OMITIR').strip()
-            if gtin_val != 'OMITIR' and gtin_val:
-                gtin_solo_numeros = re.sub(r'\D', '', gtin_val)
-                if len(gtin_solo_numeros) >= 8:
-                    atributos_payload.append({"id": "GTIN", "value_name": gtin_solo_numeros})
-
-            # CONFIGURACIÓN DEL BLOQUE DE ENVÍO
+            # --- CONFIGURACIÓN DEL BLOQUE DE ENVÍO ---
             modo_envio = prod.get('Envio', 'not_specified')
             if modo_envio == "me2_free":
                 shipping_payload = {
@@ -963,7 +1012,7 @@ FICHA TÉCNICA DEL PRODUCTO:
                 
                 requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json={"text": descripcion_estructurada})
                 
-                # 2. GOLPE DOBLE (PUT DE CONFIRMACIÓN): Obligamos a ML a aplicar el Envío Gratis y los Atributos
+                # 2. GOLPE DOBLE (PUT DE CONFIRMACIÓN): Reasegurar Envío Gratis y Características
                 put_payload = {
                     "shipping": shipping_payload,
                     "attributes": atributos_payload
