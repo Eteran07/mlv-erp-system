@@ -13,9 +13,8 @@ from dotenv import load_dotenv
 from google import genai
 
 load_dotenv()
-app = FastAPI(title="ERP Mercado Libre - Multicuenta & Plantilla Profesional")
+app = FastAPI(title="ERP Mercado Libre - Multicuenta & Control Masivo")
 
-# Crear carpeta automática para el lote de imágenes si no existe
 CARPETA_LOTE_IMAGENES = "lote_imagenes"
 os.makedirs(CARPETA_LOTE_IMAGENES, exist_ok=True)
 
@@ -25,7 +24,6 @@ try:
 except Exception:
     USAR_IA = False
 
-# --- VARIABLE GLOBAL DE ESTADO EN VIVO ---
 PROGRESO_ACTUAL = {
     "porcentaje": 0,
     "mensaje": "Iniciando...",
@@ -100,10 +98,6 @@ def redactar_parrafo_base(titulo):
         return f"Producto original y garantizado de alto rendimiento para {titulo}. Fabricado bajo estrictos estándares de calidad."
 
 def emparejar_imagen_local(modelo, sku, titulo):
-    """
-    Busca fotos en la carpeta 'lote_imagenes' que coincidan con SKU o Modelo.
-    Algoritmo flexible ignorando guiones, espacios y mayúsculas.
-    """
     if not os.path.exists(CARPETA_LOTE_IMAGENES):
         return None
     
@@ -149,16 +143,16 @@ def subir_foto_a_ml(base64_data, token):
         print(f"Error procesando imagen base64: {e}")
     return None
 
-# --- INTERFAZ HTML CON SPINNER FLUIDO Y ESPEJO SKU=MODELO ---
+# --- INTERFAZ HTML CON EDICIÓN MASIVA DE CARACTERÍSTICAS ---
 HTML_INTERFACE = """
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>ERP Mercado Libre - Multicuenta & Plantilla Profesional</title>
+    <title>ERP Mercado Libre - Control Maestro</title>
     <style>
         body { font-family: 'Segoe UI', sans-serif; background: #f0f2f5; margin: 0; padding: 20px; }
-        .container { max-width: 1700px; background: white; padding: 25px; border-radius: 12px; margin: auto; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        .container { max-width: 1780px; background: white; padding: 25px; border-radius: 12px; margin: auto; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
         h1 { text-align: center; color: #333; margin-bottom: 5px; }
         .subtitle { text-align: center; color: #666; font-size: 14px; margin-bottom: 20px; }
         
@@ -169,7 +163,6 @@ HTML_INTERFACE = """
         button { background: #007bff; color: white; border: none; padding: 11px; font-weight: bold; border-radius: 4px; cursor: pointer; transition: 0.2s; }
         button:hover { background: #0056b3; }
         
-        /* CÍRCULO GIRATORIO CON PORCENTAJE EN EL CENTRO */
         .loader-container { display: none; text-align: center; padding: 40px; background: #f8f9fa; border-radius: 12px; margin: 20px 0; border: 2px dashed #007bff; }
         .spinner-wrapper { position: relative; width: 95px; height: 95px; margin: 0 auto 15px auto; }
         .spinner-circle { box-sizing: border-box; width: 100%; height: 100%; border: 8px solid #e9ecef; border-top-color: #007bff; border-radius: 50%; animation: spin 1s linear infinite; }
@@ -177,12 +170,15 @@ HTML_INTERFACE = """
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
         .progress-text { font-weight: bold; color: #333; font-size: 15px; margin-top: 5px; }
 
-        /* BARRA DE HERRAMIENTAS MASIVAS (BULK TOOLBAR) */
-        .bulk-toolbar { display: flex; gap: 15px; background: #e3f2fd; padding: 12px 18px; border-radius: 6px; margin-bottom: 15px; align-items: center; border: 1px solid #90caf9; }
+        .bulk-toolbar { display: flex; flex-wrap: wrap; gap: 12px; background: #e3f2fd; padding: 12px 18px; border-radius: 6px; margin-bottom: 15px; align-items: center; border: 1px solid #90caf9; }
         .bulk-toolbar span { font-weight: bold; font-size: 13px; color: #0d47a1; }
         .bulk-select { padding: 6px; font-size: 12px; border-radius: 4px; border: 1px solid #64b5f6; }
-        .bulk-btn { background: #1976d2; color: white; border: none; padding: 6px 12px; font-size: 12px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .bulk-btn { background: #1976d2; color: white; border: none; padding: 7px 14px; font-size: 12px; border-radius: 4px; cursor: pointer; font-weight: bold; }
         .bulk-btn:hover { background: #1565c0; }
+        .btn-csv { background: #28a745; color: white; border: none; padding: 7px 14px; font-size: 12px; border-radius: 4px; cursor: pointer; font-weight: bold; display: flex; align-items: center; gap: 5px; }
+        .btn-csv:hover { background: #218838; }
+        .btn-bulk-attr { background: #6f42c1; color: white; border: none; padding: 7px 14px; font-size: 12px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .btn-bulk-attr:hover { background: #5a32a3; }
 
         table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
         th, td { border: 1px solid #ddd; padding: 8px; vertical-align: top;}
@@ -191,8 +187,13 @@ HTML_INTERFACE = """
         
         .log-box { background: #1e1e1e; color: #00ff66; padding: 15px; height: 200px; overflow-y: auto; font-family: monospace; border-radius: 5px; margin-top: 20px; white-space: pre-wrap; font-size: 12px;}
         
-        .hidden-section { margin-top: 30px; border: 1px solid #ffc107; background: #fffdf5; border-radius: 8px; padding: 15px; }
-        .hidden-title { font-weight: bold; color: #856404; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 1000; justify-content: center; align-items: center; }
+        .modal-box { background: white; padding: 25px; border-radius: 10px; width: 600px; max-width: 95%; box-shadow: 0 5px 25px rgba(0,0,0,0.3); }
+        .modal-box h3 { margin-top: 0; color: #333; border-bottom: 2px solid #007bff; padding-bottom: 10px; }
+        .modal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 15px; }
+        .modal-grid label { font-size: 12px; font-weight: bold; color: #555; display: block; margin-bottom: 3px; }
+        .modal-grid input { width: 100%; padding: 7px; border: 1px solid #ccc; border-radius: 4px; }
+        .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
         
         .photo-manager { border: 2px dashed #aaa; padding: 8px; text-align: center; border-radius: 6px; background: #fafafa; cursor: pointer; transition: 0.3s; position: relative;}
         .photo-manager:hover { border-color: #007bff; background: #f0f8ff; }
@@ -200,12 +201,14 @@ HTML_INTERFACE = """
         .preview-container { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; justify-content: center; }
         .preview-container img { width: 42px; height: 42px; object-fit: cover; border-radius: 4px; border: 1px solid #ccc; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         .cat-tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; background: #e3f2fd; color: #0d47a1; margin-top: 4px; }
+        .desc-tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; background: #e8f5e9; color: #2e7d32; margin-top: 4px; }
+        .attr-summary { font-size: 11px; color: #444; background: #f1f3f5; padding: 5px; border-radius: 4px; margin-top: 5px; border-left: 3px solid #007bff; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>⚙️ ERP Mercado Libre - Plantilla Profesional Masiva</h1>
-        <div class="subtitle">Ficha técnica extendida, control de exposición/envío y auditoría de duplicados</div>
+        <h1>⚙️ ERP Mercado Libre - Control Maestro</h1>
+        <div class="subtitle">Doble Blindaje: PUT de confirmación para Envío Gratis y Ficha Técnica visible en Descripción</div>
         
         <div class="panel-control">
             <div class="control-group">
@@ -231,11 +234,10 @@ HTML_INTERFACE = """
                 </div>
             </div>
             <div class="control-group" style="grid-column: span 4;">
-                <button onclick="cargarInventario()" style="width: 100%; font-size: 15px;">🔍 Sincronizar y Cargar Ficha Técnica en Tabla</button>
+                <button onclick="cargarInventario()" style="width: 100%; font-size: 15px;">🔍 Sincronizar y Cargar Productos en Tabla</button>
             </div>
         </div>
 
-        <!-- CÍRCULO GIRATORIO CON PORCENTAJE EN EL CENTRO -->
         <div id="loader-zona" class="loader-container">
             <div class="spinner-wrapper">
                 <div class="spinner-circle"></div>
@@ -246,7 +248,7 @@ HTML_INTERFACE = """
 
         <div id="tabla-container" style="display: none;">
             <div class="bulk-toolbar">
-                <span>⚡ Edición Masiva (Aplicar a toda la tabla):</span>
+                <span>⚡ Edición Masiva:</span>
                 <select id="bulk-exposicion" class="bulk-select">
                     <option value="bronze">Exposición: Bronce / Estándar</option>
                     <option value="gold_special">Exposición: Clásica</option>
@@ -254,46 +256,100 @@ HTML_INTERFACE = """
                 </select>
                 <button class="bulk-btn" onclick="aplicarExposicionMasiva()">Aplicar Exposición</button>
                 
-                <select id="bulk-envio" class="bulk-select" style="margin-left:15px;">
-                    <option value="not_specified">Envío: Acordar con el Vendedor / Cobro en Destino</option>
-                    <option value="me2">Envío: Mercado Envíos / Gratis</option>
+                <select id="bulk-envio" class="bulk-select" style="margin-left:5px;">
+                    <option value="me2_free">🟢 Mercado Envíos - Envío Gratis</option>
+                    <option value="custom_free">🟢 Envío Gratis Nacional (Custom)</option>
+                    <option value="me2_buyer">🔵 Mercado Envíos - Cobro en Destino</option>
+                    <option value="not_specified">⚪ Acordar con el Vendedor</option>
                 </select>
                 <button class="bulk-btn" onclick="aplicarEnvioMasivo()">Aplicar Envío</button>
+
+                <button class="btn-bulk-attr" onclick="abrirModalMasivo()" style="margin-left:10px;">⚡ Llenar Características Masivamente</button>
+
+                <label class="btn-csv" style="margin-left:auto;">
+                    <span>📄 Cargar Descripciones CSV</span>
+                    <input type="file" id="file-csv-desc" accept=".csv" style="display:none;" onchange="cargarDescripcionesCSV(this)">
+                </label>
             </div>
 
             <table id="data-table">
                 <thead>
                     <tr>
                         <th style="width: 30px;"><input type="checkbox" checked onclick="toggleAll(this)"></th>
-                        <th style="width: 18%;">Título & Categoría</th>
+                        <th style="width: 20%;">Título & Categoría</th>
                         <th style="width: 7%;">Precio $</th>
                         <th style="width: 6%;">Stock</th>
-                        <th style="width: 15%;">Exposición & Envío</th>
-                        <th style="width: 28%;">Ficha Técnica (Marca / Modelo / SKU / GTIN / Especificación)</th>
+                        <th style="width: 16%;">Exposición & Envío</th>
+                        <th style="width: 28%;">Ficha Técnica (Marca / Modelo / SKU / GTIN Obligatorio)</th>
                         <th style="width: 22%;">Gestor de Fotos</th>
                     </tr>
                 </thead>
                 <tbody id="tabla-body"></tbody>
             </table>
-            <button onclick="ejecutarPublicacion()" style="background: #28a745; width: 100%; margin-top: 20px; padding: 16px; font-size: 16px;">🚀 Confirmar y Publicar Lote con Ficha Completa</button>
+            <button onclick="ejecutarPublicacion()" style="background: #28a745; width: 100%; margin-top: 20px; padding: 16px; font-size: 16px;">🚀 Confirmar y Publicar Lote</button>
         </div>
 
-        <div id="seccion-ocultos" class="hidden-section" style="display: none;">
-            <div class="hidden-title" onclick="toggleOcultos()">
-                <span>👁️ Auditoría: Artículos Ya Publicados u Ocultos (<span id="count-ocultos">0</span>)</span>
-                <span>▼</span>
+        <!-- MODAL DE LLENADO MASIVO DE CARACTERÍSTICAS -->
+        <div id="modal-bulk-atributos" class="modal-overlay">
+            <div class="modal-box">
+                <h3 style="color:#6f42c1;">⚡ Llenado Masivo de Características</h3>
+                <p style="font-size:12px; color:#555;">Los atributos que llenes aquí se aplicarán instantáneamente a <b>todos los artículos marcados con check</b> en la tabla.</p>
+                <div class="modal-grid">
+                    <div>
+                        <label>Marca (Común para el lote):</label>
+                        <input type="text" id="bm-mar" placeholder="Ej: MAXIPRINT">
+                    </div>
+                    <div>
+                        <label>Color (Común para el lote):</label>
+                        <input type="text" id="bm-color" placeholder="Ej: Negro / Cian">
+                    </div>
+                    <div>
+                        <label>Compatibilidad / Rendimiento:</label>
+                        <input type="text" id="bm-compat" placeholder="Ej: Canon G1100 / HP 85A">
+                    </div>
+                    <div>
+                        <label>Material / Especificación:</label>
+                        <input type="text" id="bm-mat" placeholder="Ej: Consumible / Original">
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button onclick="cerrarModalMasivo()" style="background:#6c757d;">Cancelar</button>
+                    <button onclick="aplicarAtributosMasivos()" style="background:#6f42c1;">🚀 Aplicar a Todo el Lote Seleccionado</button>
+                </div>
             </div>
-            <div id="tabla-ocultos-div" style="display: none; margin-top: 10px;">
-                <table style="background: white;">
-                    <thead>
-                        <tr style="background: #ffc107; color: #333;">
-                            <th>Título Omitido</th>
-                            <th>Modelo / SKU</th>
-                            <th>Motivo de Omitido</th>
-                        </tr>
-                    </thead>
-                    <tbody id="body-ocultos"></tbody>
-                </table>
+        </div>
+
+        <!-- MODAL INDIVIDUAL PARA DETALLES ESPECÍFICOS -->
+        <div id="modal-atributos" class="modal-overlay">
+            <div class="modal-box">
+                <h3>🛠️ Editar Características del Producto</h3>
+                <input type="hidden" id="modal-idx">
+                <div class="modal-grid">
+                    <div>
+                        <label>Marca:</label>
+                        <input type="text" id="m-mar">
+                    </div>
+                    <div>
+                        <label>Modelo:</label>
+                        <input type="text" id="m-mod">
+                    </div>
+                    <div>
+                        <label>Color:</label>
+                        <input type="text" id="m-color">
+                    </div>
+                    <div>
+                        <label>Compatibilidad / Rendimiento:</label>
+                        <input type="text" id="m-compat">
+                    </div>
+                    <div style="grid-column: span 2;">
+                        <label>Material / Especificación Adicional:</label>
+                        <input type="text" id="m-mat">
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button onclick="cerrarModal()" style="background:#6c757d;">Cancelar</button>
+                    <button onclick="guardarAtributosModal()" style="background:#007bff;">💾 Guardar Cambios</button>
+                </div>
             </div>
         </div>
 
@@ -302,6 +358,8 @@ HTML_INTERFACE = """
 
     <script>
         const imagenesPorFila = {};
+        const atributosPorFila = {};
+        const descripcionesCSV = {};
         let intervaloProgreso = null;
 
         window.onload = async () => {
@@ -321,7 +379,6 @@ HTML_INTERFACE = """
             document.getElementById('loader-zona').style.display = 'block';
             if (intervaloProgreso) clearInterval(intervaloProgreso);
             
-            // Polling rápido a 250ms para que se vea el porcentaje incrementando
             intervaloProgreso = setInterval(async () => {
                 try {
                     const res = await fetch('/estado-progreso');
@@ -335,6 +392,117 @@ HTML_INTERFACE = """
                     }
                 } catch(e) {}
             }, 250);
+        }
+
+        function cargarDescripcionesCSV(input) {
+            const file = input.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const text = e.target.result;
+                const lineas = text.split('\\n');
+                let matchCount = 0;
+
+                for (let i = 1; i < lineas.length; i++) {
+                    const l = lineas[i].split(',');
+                    if (l.length >= 2) {
+                        const clave = l[0].trim().toLowerCase();
+                        const desc = l.slice(1).join(',').replace(/["']/g, '').trim();
+                        if (clave && desc) descripcionesCSV[clave] = desc;
+                    }
+                }
+
+                document.querySelectorAll('.prod-check').forEach(cb => {
+                    const idx = cb.dataset.idx;
+                    const skuVal = (document.getElementById('sku-'+idx).value || '').toLowerCase();
+                    const titVal = (document.getElementById('tit-'+idx).value || '').toLowerCase();
+
+                    if (descripcionesCSV[skuVal] || descripcionesCSV[titVal]) {
+                        document.getElementById('desc-tag-'+idx).innerText = "📄 Desc. CSV Asignada";
+                        matchCount++;
+                    }
+                });
+
+                alert(`✅ Se asignaron descripciones personalizadas a ${matchCount} artículos.`);
+            };
+            reader.readAsText(file);
+        }
+
+        function toggleGtin(idx) {
+            const selectVal = document.getElementById('gtin-razon-'+idx).value;
+            const inputField = document.getElementById('gtin-'+idx);
+            inputField.style.display = (selectVal === 'CUSTOM') ? 'block' : 'none';
+        }
+
+        function abrirModalMasivo() {
+            document.getElementById('modal-bulk-atributos').style.display = 'flex';
+        }
+
+        function cerrarModalMasivo() {
+            document.getElementById('modal-bulk-atributos').style.display = 'none';
+        }
+
+        function aplicarAtributosMasivos() {
+            const marVal = document.getElementById('bm-mar').value.trim();
+            const colorVal = document.getElementById('bm-color').value.trim();
+            const compatVal = document.getElementById('bm-compat').value.trim();
+            const matVal = document.getElementById('bm-mat').value.trim();
+            let count = 0;
+
+            document.querySelectorAll('.prod-check:checked').forEach(cb => {
+                const idx = cb.dataset.idx;
+                if (marVal) {
+                    atributosPorFila[idx].marca = marVal;
+                    document.getElementById('mar-'+idx).value = marVal;
+                }
+                if (colorVal) atributosPorFila[idx].color = colorVal;
+                if (compatVal) atributosPorFila[idx].compatibilidad = compatVal;
+                if (matVal) atributosPorFila[idx].material = matVal;
+
+                actualizarResumenAtributos(idx);
+                count++;
+            });
+
+            cerrarModalMasivo();
+            alert(`✅ Características aplicadas masivamente a ${count} artículos seleccionados.`);
+        }
+
+        function abrirModal(idx) {
+            const attr = atributosPorFila[idx];
+            document.getElementById('modal-idx').value = idx;
+            document.getElementById('m-mar').value = attr.marca || '';
+            document.getElementById('m-mod').value = attr.modelo || '';
+            document.getElementById('m-color').value = attr.color || '';
+            document.getElementById('m-compat').value = attr.compatibilidad || '';
+            document.getElementById('m-mat').value = attr.material || '';
+            document.getElementById('modal-atributos').style.display = 'flex';
+        }
+
+        function cerrarModal() {
+            document.getElementById('modal-atributos').style.display = 'none';
+        }
+
+        function guardarAtributosModal() {
+            const idx = document.getElementById('modal-idx').value;
+            atributosPorFila[idx].marca = document.getElementById('m-mar').value;
+            atributosPorFila[idx].modelo = document.getElementById('m-mod').value;
+            atributosPorFila[idx].color = document.getElementById('m-color').value;
+            atributosPorFila[idx].compatibilidad = document.getElementById('m-compat').value;
+            atributosPorFila[idx].material = document.getElementById('m-mat').value;
+            
+            document.getElementById('mar-'+idx).value = atributosPorFila[idx].marca;
+            document.getElementById('mod-'+idx).value = atributosPorFila[idx].modelo;
+            actualizarResumenAtributos(idx);
+            cerrarModal();
+        }
+
+        function actualizarResumenAtributos(idx) {
+            const attr = atributosPorFila[idx];
+            let info = `🏷️ ${attr.marca || 'Generico'} / ${attr.modelo || 'Universal'}`;
+            if (attr.color) info += ` | 🎨 ${attr.color}`;
+            if (attr.compatibilidad) info += ` | 🔧 ${attr.compatibilidad}`;
+            document.getElementById('resumen-attr-'+idx).innerText = info;
         }
 
         function procesarArchivos(inputElement, idx) {
@@ -359,16 +527,6 @@ HTML_INTERFACE = """
             }
         }
         
-        function toggleGtin(idx) {
-            const selectVal = document.getElementById('gtin-razon-'+idx).value;
-            document.getElementById('gtin-'+idx).style.display = (selectVal === 'CUSTOM') ? 'block' : 'none';
-        }
-
-        function toggleOcultos() {
-            const div = document.getElementById('tabla-ocultos-div');
-            div.style.display = (div.style.display === 'none') ? 'block' : 'none';
-        }
-
         function aplicarExposicionMasiva() {
             const expoVal = document.getElementById('bulk-exposicion').value;
             document.querySelectorAll('.select-exposicion').forEach(sel => sel.value = expoVal);
@@ -391,11 +549,10 @@ HTML_INTERFACE = """
             formData.append('filtrar_duplicados', document.getElementById('filtar-duplicados').checked);
 
             document.getElementById('tabla-container').style.display = 'none';
-            document.getElementById('seccion-ocultos').style.display = 'none';
             iniciarMonitoreoProgreso();
             
             const consola = document.getElementById('resultados');
-            consola.innerText = "⏳ Sincronizando con Mercado Libre y analizando ficha técnica...";
+            consola.innerText = "⏳ Sincronizando inventario con Mercado Libre...";
 
             try {
                 const response = await fetch('/previsualizar', { method: 'POST', body: formData });
@@ -412,12 +569,24 @@ HTML_INTERFACE = """
 
                     if (prod.ImagenLocal) {
                         imagenesPorFila[idx].push(prod.ImagenLocal);
-                        imgHtmlPreview = `<img src="${prod.ImagenLocal}" title="Auto-emparejada desde carpeta lote_imagenes">`;
+                        imgHtmlPreview = `<img src="${prod.ImagenLocal}" title="Auto-emparejada desde lote_imagenes">`;
                     }
                     
-                    let gtinDisplay = (prod.GTIN && prod.GTIN !== 'N/A') ? 'block' : 'none';
-                    let selectCustom = (prod.GTIN && prod.GTIN !== 'N/A') ? 'selected' : '';
-                    let selectOmit = (prod.GTIN && prod.GTIN !== 'N/A') ? '' : 'selected';
+                    atributosPorFila[idx] = {
+                        marca: prod.Marca,
+                        modelo: prod.Modelo,
+                        color: prod.Color,
+                        compatibilidad: prod.Compatibilidad,
+                        material: prod.Material
+                    };
+
+                    let gtinDisplay = (prod.GTIN && prod.GTIN !== 'N/A' && prod.GTIN !== 'OMITIR') ? 'block' : 'none';
+                    let selectCustom = (prod.GTIN && prod.GTIN !== 'N/A' && prod.GTIN !== 'OMITIR') ? 'selected' : '';
+                    let selectOmit = (prod.GTIN && prod.GTIN !== 'N/A' && prod.GTIN !== 'OMITIR') ? '' : 'selected';
+
+                    let resumenInit = `🏷️ ${prod.Marca} / ${prod.Modelo}`;
+                    if (prod.Color) resumenInit += ` | 🎨 ${prod.Color}`;
+                    if (prod.Compatibilidad) resumenInit += ` | 🔧 ${prod.Compatibilidad}`;
 
                     tbody.innerHTML += `
                         <tr>
@@ -425,7 +594,9 @@ HTML_INTERFACE = """
                             <td>
                                 <input type="text" id="tit-${idx}" value="${prod.Titulo}" maxlength="60" style="margin-bottom:4px; font-weight:bold;">
                                 <div class="cat-tag">Cat: ${prod.Categoria_ID}</div>
+                                <div id="desc-tag-${idx}" class="desc-tag">${prod.DescripcionCustom ? '📄 Desc. Excel' : '🤖 IA Automática'}</div>
                                 <input type="hidden" id="cat-${idx}" value="${prod.Categoria_ID}">
+                                <input type="hidden" id="desc-init-${idx}" value="${prod.DescripcionCustom || ''}">
                             </td>
                             <td><input type="number" id="pre-${idx}" value="${prod.Precio}" step="0.01"></td>
                             <td><input type="number" id="stk-${idx}" value="${prod.Stock}"></td>
@@ -436,27 +607,29 @@ HTML_INTERFACE = """
                                     <option value="gold_special">Clásica</option>
                                     <option value="gold_pro">Premium</option>
                                 </select>
-                                <select id="envio-${idx}" class="select-envio attr-select" style="font-size:11px;">
-                                    <option value="not_specified">Cobro en Destino / Acordar</option>
-                                    <option value="me2">Mercado Envíos / Gratis</option>
+                                <select id="envio-${idx}" class="select-envio attr-select" style="font-size:11px; font-weight:bold;">
+                                    <option value="me2_free">🟢 Mercado Envíos - Envío Gratis</option>
+                                    <option value="custom_free">🟢 Envío Gratis Nacional (Custom)</option>
+                                    <option value="me2_buyer">🔵 Mercado Envíos - Cobro en Destino</option>
+                                    <option value="not_specified">⚪ Acordar con el Vendedor</option>
                                 </select>
                             </td>
 
-                            <!-- FICHA TÉCNICA (MARCA, MODELO, SKU ESPEJO, GTIN, ESPECIFICACIONES) -->
                             <td>
                                 <div style="display:grid; grid-template-columns: 1fr 1fr; gap:4px; margin-bottom:4px;">
                                     <input type="text" id="mar-${idx}" value="${prod.Marca}" placeholder="Marca" title="Marca">
                                     <input type="text" id="mod-${idx}" value="${prod.Modelo}" placeholder="Modelo" title="Modelo">
                                 </div>
-                                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:4px; margin-bottom:4px;">
-                                    <input type="text" id="sku-${idx}" value="${prod.SKU}" placeholder="Nro. Parte / SKU" title="SKU / Número de Parte del Fabricante">
-                                    <input type="text" id="spec-${idx}" value="${prod.Especificacion}" placeholder="Color / Compatibilidad" title="Especificaciones del producto">
-                                </div>
-                                <select id="gtin-razon-${idx}" class="attr-select" onchange="toggleGtin(${idx})" style="margin-bottom:4px; font-size:11px;">
+                                <input type="text" id="sku-${idx}" value="${prod.SKU}" placeholder="Nro. Parte / SKU" style="margin-bottom:4px;" title="SKU o Código de Parte">
+                                
+                                <select id="gtin-razon-${idx}" class="attr-select" onchange="toggleGtin(${idx})" style="margin-bottom:4px; font-size:11px; font-weight:bold;">
                                     <option value="CUSTOM" ${selectCustom}>Ingresar Código (GTIN)</option>
-                                    <option value="OMITIR" ${selectOmit}>Sin Código / Omitir</option>
+                                    <option value="OMITIR" ${selectOmit}>Este producto no posee código</option>
                                 </select>
-                                <input type="text" id="gtin-${idx}" value="${prod.GTIN !== 'N/A' ? prod.GTIN : ''}" placeholder="Ej: 0123456789123" style="display:${gtinDisplay};">
+                                <input type="text" id="gtin-${idx}" value="${prod.GTIN !== 'N/A' ? prod.GTIN : ''}" placeholder="Ej: 0123456789123" style="display:${gtinDisplay}; margin-bottom:4px;">
+
+                                <button onclick="abrirModal(${idx})" style="background:#17a2b8; width:100%; padding:4px; font-size:11px;">🛠️ Ver / Editar + Características</button>
+                                <div id="resumen-attr-${idx}" class="attr-summary">${resumenInit}</div>
                             </td>
 
                             <td>
@@ -470,24 +643,8 @@ HTML_INTERFACE = """
                     `;
                 });
 
-                const bodyOcultos = document.getElementById('body-ocultos');
-                bodyOcultos.innerHTML = "";
-                if (resultado.ocultos && resultado.ocultos.length > 0) {
-                    resultado.ocultos.forEach(oc => {
-                        bodyOcultos.innerHTML += `
-                            <tr>
-                                <td>${oc.Titulo}</td>
-                                <td>${oc.Modelo}</td>
-                                <td style="color:#c82333; font-weight:bold;">${oc.Motivo}</td>
-                            </tr>
-                        `;
-                    });
-                    document.getElementById('count-ocultos').innerText = resultado.ocultos.length;
-                    document.getElementById('seccion-ocultos').style.display = 'block';
-                }
-
                 document.getElementById('tabla-container').style.display = 'block';
-                consola.innerText = `✅ ¡Sincronización completa! ${resultado.productos.length} artículos cargados con SKU/Modelo y Ficha Técnica.`;
+                consola.innerText = `✅ ¡Sincronización completa! ${resultado.productos.length} artículos listos para publicar.`;
             } catch(e) {
                 consola.innerText = "❌ Error en sincronización: " + e;
             }
@@ -501,11 +658,20 @@ HTML_INTERFACE = """
             const seleccionados = [];
             document.querySelectorAll('.prod-check:checked').forEach(cb => {
                 const idx = cb.dataset.idx;
+                const attr = atributosPorFila[idx];
+                
                 const razonGtin = document.getElementById('gtin-razon-'+idx).value;
                 let gtinFinal = 'OMITIR';
                 if (razonGtin === 'CUSTOM') {
                     gtinFinal = document.getElementById('gtin-'+idx).value;
                 }
+
+                const skuVal = (document.getElementById('sku-'+idx).value || '').toLowerCase();
+                const titVal = (document.getElementById('tit-'+idx).value || '').toLowerCase();
+                let descFinal = document.getElementById('desc-init-'+idx).value;
+                
+                if (descripcionesCSV[skuVal]) descFinal = descripcionesCSV[skuVal];
+                else if (descripcionesCSV[titVal]) descFinal = descripcionesCSV[titVal];
 
                 seleccionados.push({
                     "Titulo": document.getElementById('tit-'+idx).value,
@@ -517,8 +683,11 @@ HTML_INTERFACE = """
                     "Marca": document.getElementById('mar-'+idx).value,
                     "Modelo": document.getElementById('mod-'+idx).value,
                     "SKU": document.getElementById('sku-'+idx).value,
-                    "Especificacion": document.getElementById('spec-'+idx).value,
                     "GTIN": gtinFinal,
+                    "Color": attr.color,
+                    "Compatibilidad": attr.compatibilidad,
+                    "Material": attr.material,
+                    "DescripcionCustom": descFinal,
                     "ImagenesB64": imagenesPorFila[idx] || []
                 });
             });
@@ -532,7 +701,7 @@ HTML_INTERFACE = """
 
             iniciarMonitoreoProgreso();
             const consola = document.getElementById('resultados');
-            consola.innerText = `🚀 Publicando lote... Aplicando ficha técnica extendida (SKU/Modelo) y parámetros de envío/exposición.`;
+            consola.innerText = `🚀 Publicando lote... Aplicando Doble Blindaje de Envío Gratis y Ficha Técnica.`;
 
             try {
                 const response = await fetch(`/publicar-lote?cuenta=${cuentaSeleccionada}`, {
@@ -602,11 +771,9 @@ async def previsualizar_archivo(
     total_filas = len(df_rango)
 
     productos_activos = []
-    productos_ocultos = []
     cache_categorias = {}
     
     for indice, (_, fila) in enumerate(df_rango.iterrows()):
-        # CEDEMOS EL CONTROL AL BUCLE DE PYTHON PARA QUE REPORTE EL % EN VIVO
         await asyncio.sleep(0.01)
         porcentaje_actual = int(20 + ((indice + 1) / max(1, total_filas)) * 75)
         
@@ -615,7 +782,6 @@ async def previsualizar_archivo(
             
         titulo = titulo_original[:60].strip()
         
-        # ESPEJO OBLIGATORIO DE CÓDIGO EN SKU Y MODELO
         codigo_identificador = str(fila.get('SKU', fila.get('Codigo Zmart', fila.get('Codigo', fila.get('Modelo', 'Universal'))))).strip()
         if codigo_identificador.lower() == 'nan' or not codigo_identificador:
             codigo_identificador = str(fila.get('Modelo', 'Universal')).strip()
@@ -623,17 +789,18 @@ async def previsualizar_archivo(
         modelo = codigo_identificador
         sku = codigo_identificador
         
-        especificacion = str(fila.get('Color', fila.get('Especificacion', fila.get('Compatibilidad', '')))).strip()
-        if especificacion.lower() == 'nan': especificacion = ''
+        color = str(fila.get('Color', '')).strip()
+        if color.lower() == 'nan': color = ''
+        compatibilidad = str(fila.get('Compatibilidad', fila.get('Especificacion', ''))).strip()
+        if compatibilidad.lower() == 'nan': compatibilidad = ''
+        material = str(fila.get('Material', fila.get('Rendimiento', ''))).strip()
+        if material.lower() == 'nan': material = ''
+        desc_custom = str(fila.get('Descripcion', '')).strip()
+        if desc_custom.lower() == 'nan': desc_custom = ''
         
         actualizar_progreso(porcentaje_actual, f"Procesando fila {indice+1} de {total_filas}: {titulo[:25]}...")
 
         if filtrar_duplicados == "true" and titulo.lower() in titulos_existentes:
-            productos_ocultos.append({
-                "Titulo": titulo,
-                "Modelo": modelo,
-                "Motivo": "Ya está publicado activamente en la cuenta seleccionada"
-            })
             continue
 
         precio = float(fila.get('Precio', fila.get('PRECIO  $', fila.get('PRECIO $', 1.0))))
@@ -642,7 +809,7 @@ async def previsualizar_archivo(
         marca = str(fila.get('Marca', 'Generico')).strip()
         
         gtin = str(fila.get('GTIN', fila.get('Codigo de Barras', 'N/A'))).strip()
-        if gtin.lower() == 'nan' or gtin == '' or not gtin.isdigit(): 
+        if gtin.lower() == 'nan' or gtin == '': 
             gtin = 'N/A'
         
         if token_ref:
@@ -659,7 +826,8 @@ async def previsualizar_archivo(
         productos_activos.append({
             "Titulo": titulo, "Precio": precio, "Stock": stock,
             "Marca": marca, "Modelo": modelo, "SKU": sku, 
-            "Especificacion": especificacion, "GTIN": gtin, 
+            "Color": color, "Compatibilidad": compatibilidad, "Material": material,
+            "DescripcionCustom": desc_custom, "GTIN": gtin, 
             "Categoria_ID": cat_id, "ImagenLocal": imagen_emparejada
         })
 
@@ -667,10 +835,7 @@ async def previsualizar_archivo(
     actualizar_progreso(100, "¡Sincronización Finalizada con Éxito!")
     PROGRESO_ACTUAL["activo"] = False
     
-    return {
-        "productos": sorted(productos_activos, key=lambda x: x["Categoria_ID"]),
-        "ocultos": productos_ocultos
-    }
+    return {"productos": sorted(productos_activos, key=lambda x: x["Categoria_ID"])}
 
 @app.post("/publicar-lote")
 async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
@@ -698,8 +863,72 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
             actualizar_progreso(porcentaje, f"[{nombre_perfil}] Publicando ({procesados}/{total_items}): {titulo_original[:25]}...")
 
             titulo_x3 = f"{titulo_original}\n{titulo_original}\n{titulo_original}\n"
-            parrafo_ia = redactar_parrafo_base(titulo_original)
-            descripcion_estructurada = f"{BLOQUE_SUPERIOR}\n{titulo_x3}\n{parrafo_ia}\n{BLOQUE_INFERIOR}"
+            
+            if prod.get('DescripcionCustom'):
+                cuerpo_desc = prod['DescripcionCustom']
+            else:
+                cuerpo_desc = redactar_parrafo_base(titulo_original)
+            
+            # BLINDAJE INCRUSTADO: FICHA TÉCNICA VISIBLE EN LA DESCRIPCIÓN
+            bloque_ficha = f"""
+==================================================================
+FICHA TÉCNICA DEL PRODUCTO:
+- MARCA: {prod['Marca']}
+- MODELO: {prod['Modelo']}
+- NRO. DE PARTE / SKU: {prod.get('SKU', 'N/A')}
+- COLOR / ESPECIFICACIÓN: {prod.get('Color', 'N/A')}
+- COMPATIBILIDAD / LÍNEA: {prod.get('Compatibilidad', 'N/A')}
+- MATERIAL / TIPO: {prod.get('Material', 'N/A')}
+==================================================================
+"""
+            descripcion_estructurada = f"{BLOQUE_SUPERIOR}\n{titulo_x3}\n{bloque_ficha}\n{cuerpo_desc}\n{BLOQUE_INFERIOR}"
+
+            # CONFIGURACIÓN DE ATRIBUTOS MÚLTIPLES PARA MERCADO LIBRE
+            atributos_payload = [
+                {"id": "BRAND", "value_name": prod['Marca']},
+                {"id": "MODEL", "value_name": prod['Modelo']}
+            ]
+            if prod.get('SKU'):
+                atributos_payload.append({"id": "SELLER_SKU", "value_name": str(prod['SKU']).strip()})
+                atributos_payload.append({"id": "PART_NUMBER", "value_name": str(prod['SKU']).strip()})
+            if prod.get('Color'):
+                atributos_payload.append({"id": "COLOR", "value_name": str(prod['Color']).strip()})
+            if prod.get('Compatibilidad'):
+                atributos_payload.append({"id": "COMPATIBLE_MODELS", "value_name": str(prod['Compatibilidad']).strip()})
+                atributos_payload.append({"id": "LINE", "value_name": str(prod['Compatibilidad']).strip()})
+            if prod.get('Material'):
+                atributos_payload.append({"id": "MATERIAL", "value_name": str(prod['Material']).strip()})
+
+            gtin_val = prod.get('GTIN', 'OMITIR').strip()
+            if gtin_val != 'OMITIR' and gtin_val:
+                gtin_solo_numeros = re.sub(r'\D', '', gtin_val)
+                if len(gtin_solo_numeros) >= 8:
+                    atributos_payload.append({"id": "GTIN", "value_name": gtin_solo_numeros})
+
+            # CONFIGURACIÓN DEL BLOQUE DE ENVÍO
+            modo_envio = prod.get('Envio', 'not_specified')
+            if modo_envio == "me2_free":
+                shipping_payload = {
+                    "mode": "me2", 
+                    "local_pick_up": True, 
+                    "free_shipping": True
+                }
+            elif modo_envio == "custom_free":
+                shipping_payload = {
+                    "mode": "custom",
+                    "free_shipping": True,
+                    "costs": [
+                        {"description": "Envío Gratis a Nivel Nacional", "cost": 0}
+                    ]
+                }
+            elif modo_envio == "me2_buyer":
+                shipping_payload = {
+                    "mode": "me2", 
+                    "local_pick_up": True, 
+                    "free_shipping": False
+                }
+            else:
+                shipping_payload = {"mode": "not_specified", "local_pick_up": True}
 
             datos_publicacion = {
                 "title": titulo_original,
@@ -710,29 +939,9 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                 "buying_mode": "buy_it_now",
                 "condition": "new",
                 "listing_type_id": prod.get('Exposicion', 'bronze'),
-                "attributes": [
-                    {"id": "BRAND", "value_name": prod['Marca']},
-                    {"id": "MODEL", "value_name": prod['Modelo']}
-                ]
+                "attributes": atributos_payload,
+                "shipping": shipping_payload
             }
-
-            modo_envio = prod.get('Envio', 'not_specified')
-            if modo_envio == "me2":
-                datos_publicacion["shipping"] = {"mode": "me2", "local_pick_up": True, "free_shipping": False}
-            else:
-                datos_publicacion["shipping"] = {"mode": "not_specified"}
-
-            # AMBOS CAMPOS (SKU Y MODELO) SE INYECTAN CON EL CÓDIGO IDENTIFICADOR EXACTO
-            if prod.get('SKU'):
-                datos_publicacion["attributes"].append({"id": "SELLER_SKU", "value_name": str(prod['SKU']).strip()})
-                datos_publicacion["attributes"].append({"id": "PART_NUMBER", "value_name": str(prod['SKU']).strip()})
-            
-            if prod.get('Especificacion'):
-                datos_publicacion["attributes"].append({"id": "COLOR", "value_name": str(prod['Especificacion']).strip()})
-
-            gtin_val = prod.get('GTIN', 'OMITIR').strip()
-            if gtin_val != 'OMITIR' and gtin_val and gtin_val.isdigit():
-                datos_publicacion["attributes"].append({"id": "GTIN", "value_name": gtin_val})
 
             fotos_payload = []
             if prod.get('ImagenesB64'):
@@ -744,13 +953,23 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
             if fotos_payload:
                 datos_publicacion["pictures"] = fotos_payload
 
+            # 1. CREACIÓN INICIAL DEL ARTÍCULO
             respuesta = requests.post("https://api.mercadolibre.com/items", headers=headers, json=datos_publicacion)
             
             if respuesta.status_code == 201:
                 item_data = respuesta.json()
                 item_id = item_data.get('id')
                 permalink = item_data.get('permalink')
+                
                 requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json={"text": descripcion_estructurada})
+                
+                # 2. GOLPE DOBLE (PUT DE CONFIRMACIÓN): Obligamos a ML a aplicar el Envío Gratis y los Atributos
+                put_payload = {
+                    "shipping": shipping_payload,
+                    "attributes": atributos_payload
+                }
+                requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json=put_payload)
+                
                 logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO! -> {permalink}")
             else:
                 error_texto = respuesta.text
@@ -766,6 +985,11 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                         
                         requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json={"title": titulo_original})
                         requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json={"text": descripcion_estructurada})
+                        
+                        # GOLPE DOBLE EN BYPASS
+                        put_payload = {"shipping": shipping_payload, "attributes": atributos_payload}
+                        requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json=put_payload)
+                        
                         logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO (Bypass Catálogo)! -> {permalink}")
                     else:
                         logs_totales.append(f"❌ [{nombre_perfil}] Error '{titulo_original[:15]}...': {res_bypass.json().get('message')}")
