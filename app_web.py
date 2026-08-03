@@ -12,14 +12,18 @@ from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 from google import genai
 
-# Importación de tu gestor de tokens modular
 from token_manager import (
     listar_archivos_token, obtener_nombre_cuenta,
     obtener_token, obtener_titulos_publicados, renovar_y_guardar_token
 )
+from categorizador import (
+    obtener_categorias_raices_mlv, adivinar_categoria_y_raiz,
+    coincide_con_categoria_elegida
+)
+from excel_parser import procesar_excel_heuristico
 
 load_dotenv()
-app = FastAPI(title="ERP Mercado Libre - Dashboard & Modular")
+app = FastAPI(title="ERP Mercado Libre - Dashboard Definitivo")
 
 CARPETA_LOTE_IMAGENES = "lote_imagenes"
 os.makedirs(CARPETA_LOTE_IMAGENES, exist_ok=True)
@@ -37,7 +41,6 @@ PROGRESO_ACTUAL = {
 }
 
 CACHE_ATRIBUTOS_CAT = {}
-
 BLOQUE_SUPERIOR = "SOMOS TIENDA FÍSICA, Empresa Mayorista Líder en el Mercado de la Computación Producto 100% de calidad\n"
 BLOQUE_INFERIOR = """
 .Por Favor Verifique la disponibilidad antes de ofertar
@@ -50,13 +53,7 @@ BLOQUE_INFERIOR = """
 def actualizar_progreso(porcentaje: int, mensaje: str):
     PROGRESO_ACTUAL["porcentaje"] = porcentaje
     PROGRESO_ACTUAL["mensaje"] = mensaje
-
-def adivinar_categoria(titulo, headers):
-    url = "https://api.mercadolibre.com/sites/MLV/domain_discovery/search"
-    response = requests.get(url, headers=headers, params={"q": titulo})
-    if response.status_code == 200 and len(response.json()) > 0:
-        return response.json()[0].get("category_id")
-    return "MLV-DESCONOCIDA"
+    PROGRESO_ACTUAL["activo"] = True
 
 def redactar_parrafo_base(titulo):
     if not USAR_IA: 
@@ -73,7 +70,6 @@ def redactar_parrafo_base(titulo):
 def emparejar_imagen_local(modelo, sku, titulo):
     if not os.path.exists(CARPETA_LOTE_IMAGENES):
         return None
-    
     archivos = os.listdir(CARPETA_LOTE_IMAGENES)
     if not archivos:
         return None
@@ -126,7 +122,7 @@ def subir_foto_a_ml(base64_data, token):
         headers = {"Authorization": f"Bearer {token}"}
         files = {"file": (f"foto.{file_ext}", image_bytes, f"image/{file_ext}")}
         
-        res = requests.post(url, headers=headers, files=files)
+        res = requests.post(url, headers=headers, files=files, timeout=10)
         if res.status_code == 201:
             return res.json().get("id") 
     except Exception as e:
@@ -152,7 +148,7 @@ def construir_atributos_dinamicos(prod, headers):
     elif headers and cat_id:
         try:
             url_attr = f"https://api.mercadolibre.com/categories/{cat_id}/attributes"
-            res = requests.get(url_attr, headers=headers)
+            res = requests.get(url_attr, headers=headers, timeout=5)
             if res.status_code == 200:
                 esquema_cat = res.json()
                 CACHE_ATRIBUTOS_CAT[cat_id] = esquema_cat
@@ -170,7 +166,6 @@ def construir_atributos_dinamicos(prod, headers):
         atributos.append({"id": id_color, "value_name": color_val})
 
     PROHIBIDOS_COMPAT = {"HAS_COMPATIBILITIES", "COMPATIBILITIES", "ITEM_CONDITION", "GTIN", "BRAND", "MODEL", "SELLER_SKU", "PART_NUMBER"}
-    
     compat_val = str(prod.get("Compatibilidad", "")).strip()
     if compat_val and compat_val.lower() != "nan":
         id_elegido = None
@@ -207,126 +202,12 @@ def construir_atributos_dinamicos(prod, headers):
 
     return atributos
 
-def procesar_excel_heuristico(temp_filename, hoja_objetivo="TODAS", filtro_especialidad="TODO"):
-    filas_extraidas = []
-    
-    if temp_filename.lower().endswith(".csv"):
-        hojas_data = {"CSV": pd.read_csv(temp_filename, header=None, encoding='utf-8', sep=None, engine='python')}
-    else:
-        with pd.ExcelFile(temp_filename) as xls:
-            nombres_hojas = xls.sheet_names if hoja_objetivo == "TODAS" else [hoja_objetivo]
-            hojas_data = {nombre: xls.parse(nombre, header=None) for nombre in nombres_hojas if nombre in xls.sheet_names}
-
-    palabras_header = ["codigo", "código", "sku", "producto", "descripcion", "descripción", "precio", "marca", "categoria", "nombre"]
-
-    for nom_hoja, df_raw in hojas_data.items():
-        if df_raw.empty:
-            continue
-        
-        fila_header = -1
-        for i in range(min(15, len(df_raw))):
-            valores_fila = [str(val).lower().strip() for val in df_raw.iloc[i].tolist() if pd.notna(val)]
-            coincidencias = sum(1 for w in palabras_header if any(w in v for v in valores_fila))
-            if coincidencias >= 2:
-                fila_header = i
-                break
-        
-        if fila_header == -1:
-            continue
-
-        headers = [str(c).strip() for c in df_raw.iloc[fila_header].tolist()]
-        df_data = df_raw.iloc[fila_header + 1:].copy()
-        df_data.columns = headers
-
-        col_sku, col_tit, col_pre, col_mar, col_stk, col_cat = None, None, None, None, None, None
-        
-        for col in df_data.columns:
-            cl = str(col).lower().strip()
-            if any(k in cl for k in ['codigo', 'código', 'sku', 'part number', 'nro parte']):
-                if not col_sku: col_sku = col
-            elif any(k in cl for k in ['nombre del producto', 'descripcion', 'descripción', 'producto', 'titulo', 'título']):
-                if not col_tit: col_tit = col
-            elif any(k in cl for k in ['precio$ ml', 'precio $ ml', 'precio $', 'precio', 'pvp', 'costo']):
-                if not col_pre: col_pre = col
-            elif any(k in cl for k in ['marca', 'brand']):
-                if not col_mar: col_mar = col
-            elif any(k in cl for k in ['disponibilidad', 'stock', 'cant', 'existencia', 'disponible']):
-                if not col_stk: col_stk = col
-            elif any(k in cl for k in ['categoria', 'categoría', 'rubro']):
-                if not col_cat: col_cat = col
-
-        categoria_banda_actual = "GENERAL"
-
-        for _, row in df_data.iterrows():
-            primera_celda = str(row.iloc[0]).strip() if len(row) > 0 and pd.notna(row.iloc[0]) else ""
-            
-            if "categoria:" in primera_celda.lower() or "categoría:" in primera_celda.lower():
-                categoria_banda_actual = re.sub(r'(?i)categor[ií]a:\s*', '', primera_celda).split('(')[0].strip()
-                continue
-
-            sku_val = str(row[col_sku]).strip() if col_sku and pd.notna(row[col_sku]) else ""
-            tit_val = str(row[col_tit]).strip() if col_tit and pd.notna(row[col_tit]) else ""
-
-            if not tit_val or tit_val.lower() == "nan" or len(tit_val) < 4:
-                continue
-
-            try:
-                pre_raw = row[col_pre] if col_pre and pd.notna(row[col_pre]) else 1.0
-                pre_val = float(str(pre_raw).replace('$', '').replace(',', '').strip())
-            except Exception:
-                pre_val = 1.0
-            pre_val = max(1.0, pre_val)
-
-            stk_val = 5
-            if col_stk and pd.notna(row[col_stk]):
-                s_txt = str(row[col_stk]).upper().strip()
-                if any(w in s_txt for w in ["INMEDIATA", "DISPONIBLE", "SI", "YES", "OK"]):
-                    stk_val = 5
-                else:
-                    try:
-                        stk_val = max(1, int(float(s_txt)))
-                    except Exception:
-                        stk_val = 5
-
-            mar_val = str(row[col_mar]).strip() if col_mar and pd.notna(row[col_mar]) else "Generico"
-            if mar_val.lower() == "nan" or not mar_val: mar_val = "Generico"
-
-            cat_linea = str(row[col_cat]).strip() if col_cat and pd.notna(row[col_cat]) else categoria_banda_actual
-            if cat_linea.lower() == "nan" or not cat_linea: cat_linea = categoria_banda_actual
-
-            if filtro_especialidad != "TODO":
-                texto_analisis = f"{tit_val} {cat_linea}".lower()
-                if filtro_especialidad == "COMPUTACION":
-                    if not any(k in texto_analisis for k in ["laptop", "aspire", "notebook", "pc", "core", "ryzen", "portátil", "portatil", "intel", "amd"]):
-                        continue
-                elif filtro_especialidad == "MONITORES":
-                    if not any(k in texto_analisis for k in ["monitor", "pantalla", "display", "aoc", "144hz", "ips", "vga", "hdmi"]):
-                        continue
-                elif filtro_especialidad == "ACCESORIOS":
-                    if not any(k in texto_analisis for k in ["teclado", "mouse", "argomtech", "logitech", "aro de luz", "cable", "adaptador", "auricular", "gel"]):
-                        continue
-                elif filtro_especialidad == "REDES":
-                    if not any(k in texto_analisis for k in ["access point", "router", "switch", "wi-fi", "wifi", "red", "ethernet", "tplink"]):
-                        continue
-
-            filas_extraidas.append({
-                "SKU": sku_val if sku_val and sku_val.lower() != "nan" else "Universal",
-                "Titulo": tit_val,
-                "Precio": pre_val,
-                "Stock": stk_val,
-                "Marca": mar_val,
-                "CategoriaOrigen": cat_linea,
-                "Hoja": nom_hoja
-            })
-
-    return filas_extraidas
-
 HTML_INTERFACE = """
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>ERP Mercado Libre - Dashboard & Motor Heurístico</title>
+    <title>ERP Mercado Libre - Dashboard Definitivo</title>
     <style>
         * { box-sizing: border-box; }
         body { font-family: 'Segoe UI', sans-serif; background: #f1f5f9; margin: 0; display: flex; min-height: 100vh; }
@@ -346,7 +227,7 @@ HTML_INTERFACE = """
         .container { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
         h1 { color: #1e293b; margin-top: 0; font-size: 24px; }
         .subtitle { color: #64748b; font-size: 14px; margin-bottom: 20px; }
-        .panel-control { display: grid; grid-template-columns: 1.1fr 1fr 1fr 1fr 1.1fr; gap: 12px; background: #f8fafc; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #e2e8f0; }
+        .panel-control { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr; gap: 15px; background: #f8fafc; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #e2e8f0; }
         .control-group { display: flex; flex-direction: column; gap: 5px; }
         label { font-weight: bold; font-size: 13px; color: #334155; }
         input[type="file"], select { padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px; background: white; font-size: 13px; }
@@ -367,10 +248,15 @@ HTML_INTERFACE = """
         .badge-libre { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
         .badge-existe { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
         .log-box { background: #0f172a; color: #4ade80; padding: 15px; height: 250px; overflow-y: auto; font-family: monospace; border-radius: 5px; margin-top: 20px; white-space: pre-wrap; font-size: 12px;}
-        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 1000; justify-content: center; align-items: center; }
-        .modal-box { background: white; padding: 25px; border-radius: 10px; width: 600px; max-width: 95%; box-shadow: 0 5px 25px rgba(0,0,0,0.3); }
-        .modal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 15px; }
-        .modal-grid input { width: 100%; padding: 7px; border: 1px solid #ccc; border-radius: 4px; }
+        
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.65); z-index: 2000; justify-content: center; align-items: center; }
+        .modal-box { background: white; padding: 28px; border-radius: 12px; width: 680px; max-width: 95%; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
+        .modal-box h3 { margin-top: 0; color: #0f172a; border-bottom: 2px solid #0284c7; padding-bottom: 10px; }
+        .category-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-height: 380px; overflow-y: auto; margin: 15px 0; padding-right: 5px; }
+        .category-item { border: 1px solid #cbd5e1; padding: 12px; border-radius: 6px; cursor: pointer; transition: 0.2s; font-size: 13px; font-weight: bold; color: #334155; display: flex; align-items: center; gap: 8px; }
+        .category-item:hover { background: #f0f9ff; border-color: #0284c7; color: #0284c7; }
+        .category-item.selected { background: #e0f2fe; border-color: #0284c7; color: #0369a1; box-shadow: 0 0 0 2px #0284c7; }
+        
         .photo-manager { border: 2px dashed #aaa; padding: 8px; text-align: center; border-radius: 6px; background: #fafafa; cursor: pointer; position: relative;}
         .photo-manager input[type="file"] { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
         .preview-container { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; justify-content: center; }
@@ -401,7 +287,7 @@ HTML_INTERFACE = """
         <div id="tab-maestro" class="section-view active">
             <div class="container">
                 <h1>📦 Panel Maestro de Sincronización y Publicación</h1>
-                <div class="subtitle">Detección Heurística Multi-Hoja, Filtro por Categoría y Control de Inventario</div>
+                <div class="subtitle">Selector Oficial de Categorías MLV, Detección de Hojas y Edición Masiva Completa</div>
                 
                 <div class="panel-control">
                     <div class="control-group">
@@ -419,14 +305,11 @@ HTML_INTERFACE = """
                         </select>
                     </div>
                     <div class="control-group">
-                        <label>4. Filtro por Especialidad:</label>
-                        <select id="filtro-especialidad">
-                            <option value="TODO">🌐 Todo el Inventario (Sin Filtro)</option>
-                            <option value="COMPUTACION">💻 Solo Laptops y Computadoras</option>
-                            <option value="MONITORES">🖥️ Solo Monitores y Pantallas</option>
-                            <option value="ACCESORIOS">🔌 Accesorios y Periféricos</option>
-                            <option value="REDES">📡 Redes y Conectividad</option>
-                        </select>
+                        <label>4. Rango de filas:</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="number" id="rango-inicio" value="1" placeholder="Desde" style="width: 50%;">
+                            <input type="number" id="rango-fin" value="100" placeholder="Hasta" style="width: 50%;">
+                        </div>
                     </div>
                     <div class="control-group">
                         <label>5. Filtro Duplicados:</label>
@@ -435,8 +318,10 @@ HTML_INTERFACE = """
                             <span style="font-size: 12px; color: #444;">Ocultar YA EXISTENTES</span>
                         </div>
                     </div>
-                    <div class="control-group" style="grid-column: span 5;">
-                        <button onclick="cargarInventario()" style="width: 100%; font-size: 15px;">🔍 Sincronizar y Analizar Inventario Heurístico</button>
+                    <div class="control-group" style="grid-column: span 3;">
+                        <button onclick="abrirModalCategorias()" style="width: 100%; font-size: 15px; background: #0284c7;">
+                            🔍 Sincronizar y Elegir Categoría Oficial ML
+                        </button>
                     </div>
                 </div>
 
@@ -445,7 +330,7 @@ HTML_INTERFACE = """
                         <div class="spinner-circle"></div>
                         <div id="spinner-percentage" class="spinner-percentage">0%</div>
                     </div>
-                    <div id="loader-mensaje" style="font-weight:bold; color:#1e293b;">Analizando inventario...</div>
+                    <div id="loader-mensaje" style="font-weight:bold; color:#1e293b; font-size:16px;">Analizando inventario...</div>
                 </div>
 
                 <div id="tabla-container" style="display: none;">
@@ -495,7 +380,7 @@ HTML_INTERFACE = """
                 <h1>🔑 Estado y Diagnóstico en Vivo de Cuentas</h1>
                 <div class="subtitle">Prueba la conexión y la renovación automática de tokens sin salir de tu panel</div>
                 <button onclick="verificarTokens()" style="padding: 12px 25px; font-size: 15px;">🔄 Probar Conexión y Renovar Tokens Ahora</button>
-                <div id="log-tokens" class="log-box" style="height: 350px;">Presiona el botón para verificar la salud de los tokens...</div>
+                <div id="log-tokens" class="log-box" style="height: 350px;">Presiona el botón para verificar la salud de los tokens de Jesús y Rafael...</div>
             </div>
         </div>
 
@@ -517,22 +402,43 @@ HTML_INTERFACE = """
         </div>
     </div>
 
-    <div id="modal-bulk-atributos" class="modal-overlay">
+    <!-- MODAL EMERGENTE DE CATEGORÍAS MLV -->
+    <div id="modal-categoria-mlv" class="modal-overlay">
         <div class="modal-box">
-            <h3 style="color:#7e22ce;">⚡ Llenado Masivo de Características</h3>
-            <div class="modal-grid">
-                <div><label>Marca:</label><input type="text" id="bm-mar"></div>
-                <div><label>Color:</label><input type="text" id="bm-color"></div>
-                <div><label>Compatibilidad:</label><input type="text" id="bm-compat"></div>
-                <div><label>Material:</label><input type="text" id="bm-mat"></div>
-            </div>
-            <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
-                <button onclick="cerrarModalMasivo()" style="background:#64748b;">Cancelar</button>
-                <button onclick="aplicarAtributosMasivos()" style="background:#7e22ce;">🚀 Aplicar a Todo</button>
+            <h3>🏷️ Selecciona una Categoría Oficial de Mercado Libre</h3>
+            <p style="font-size:13px; color:#64748b; margin-bottom:10px;">
+                Filtra tu rango de filas por un rubro oficial para mayor precisión, o elige cargar absolutamente todo el inventario:
+            </p>
+            <div id="lista-categorias-ml" class="category-grid"></div>
+            <input type="hidden" id="cat-seleccionada-id" value="TODAS">
+            <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:20px; border-top:1px solid #e2e8f0; padding-top:15px;">
+                <button onclick="cerrarModalCategorias()" style="background:#64748b;">Cancelar</button>
+                <button onclick="confirmarYCargarInventario()" style="background:#16a34a; padding:10px 20px;">
+                    🚀 Confirmar y Cargar Tabla de Publicación
+                </button>
             </div>
         </div>
     </div>
 
+    <!-- MODAL MASIVO -->
+    <div id="modal-bulk-atributos" class="modal-overlay">
+        <div class="modal-box">
+            <h3 style="color:#7e22ce;">⚡ Llenado Masivo de Características</h3>
+            <p style="font-size:12px; color:#64748b;">Los atributos que llenes aquí se aplicarán instantáneamente a <b>todos los artículos marcados con check</b> en la tabla.</p>
+            <div class="modal-grid">
+                <div><label>Marca:</label><input type="text" id="bm-mar" placeholder="Ej: MAXIPRINT"></div>
+                <div><label>Color:</label><input type="text" id="bm-color" placeholder="Ej: Negro / Cian"></div>
+                <div><label>Compatibilidad:</label><input type="text" id="bm-compat" placeholder="Ej: Canon G1100"></div>
+                <div><label>Material:</label><input type="text" id="bm-mat" placeholder="Ej: Original"></div>
+            </div>
+            <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+                <button onclick="cerrarModalMasivo()" style="background:#64748b;">Cancelar</button>
+                <button onclick="aplicarAtributosMasivos()" style="background:#7e22ce;">🚀 Aplicar a Todo el Lote</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL INDIVIDUAL -->
     <div id="modal-atributos" class="modal-overlay">
         <div class="modal-box">
             <h3>🛠️ Editar Características del Producto</h3>
@@ -541,7 +447,7 @@ HTML_INTERFACE = """
                 <div><label>Marca:</label><input type="text" id="m-mar"></div>
                 <div><label>Modelo:</label><input type="text" id="m-mod"></div>
                 <div><label>Color:</label><input type="text" id="m-color"></div>
-                <div><label>Compatibilidad:</label><input type="text" id="m-compat"></div>
+                <div><label>Compatibilidad / Rendimiento:</label><input type="text" id="m-compat"></div>
                 <div style="grid-column: span 2;"><label>Material / Especificación:</label><input type="text" id="m-mat"></div>
             </div>
             <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
@@ -605,7 +511,7 @@ HTML_INTERFACE = """
 
         async function verificarTokens() {
             const consola = document.getElementById('log-tokens');
-            consola.innerText = "⏳ Probando conexión y vigencia de tokens en vivo...";
+            consola.innerText = "⏳ Probando conexión y vigencia de tokens en vivo con Mercado Libre...";
             try {
                 const res = await fetch('/verificar-tokens');
                 const data = await res.json();
@@ -777,22 +683,70 @@ HTML_INTERFACE = """
             document.querySelectorAll('.select-envio').forEach(sel => sel.value = envioVal);
         }
 
-        async function cargarInventario() {
+        async function abrirModalCategorias() {
             const fileInput = document.getElementById('file-db');
-            if (!fileInput.files.length) return alert('Selecciona un archivo Excel o CSV.');
+            if (!fileInput.files.length) return alert('Selecciona primero un archivo Excel o CSV.');
+
+            const modal = document.getElementById('modal-categoria-mlv');
+            const grid = document.getElementById('lista-categorias-ml');
+            grid.innerHTML = "⏳ Cargando categorías oficiales desde Mercado Libre...";
+            modal.style.display = 'flex';
+
+            try {
+                const res = await fetch('/api/categorias-mlv');
+                const catList = await res.json();
+                
+                grid.innerHTML = `
+                    <div class="category-item selected" onclick="seleccionarCategoria('TODAS', this)" style="grid-column: span 2; background:#e0f2fe; border-color:#0284c7;">
+                        🌐 <b>CARGAR TODO EL INVENTARIO</b> (Sin filtro de categoría)
+                    </div>
+                `;
+
+                catList.forEach(c => {
+                    grid.innerHTML += `
+                        <div class="category-item" onclick="seleccionarCategoria('${c.id}', this)">
+                            📌 ${c.name} <span style="font-size:10px; color:#64748b;">(${c.id})</span>
+                        </div>
+                    `;
+                });
+            } catch(e) {
+                grid.innerHTML = "❌ Error conectando a la API de categorías MLV.";
+            }
+        }
+
+        function seleccionarCategoria(idCat, elemento) {
+            document.querySelectorAll('.category-item').forEach(el => el.classList.remove('selected'));
+            elemento.classList.add('selected');
+            document.getElementById('cat-seleccionada-id').value = idCat;
+        }
+
+        function cerrarModalCategorias() {
+            document.getElementById('modal-categoria-mlv').style.display = 'none';
+        }
+
+        async function confirmarYCargarInventario() {
+            cerrarModalCategorias();
+            const idCat = document.getElementById('cat-seleccionada-id').value;
+            const fileInput = document.getElementById('file-db');
 
             const formData = new FormData();
             formData.append('file', fileInput.files[0]);
             formData.append('cuenta', document.getElementById('cuenta-select').value);
             formData.append('hoja', document.getElementById('hoja-select').value);
-            formData.append('filtro_especialidad', document.getElementById('filtro-especialidad').value);
+            formData.append('inicio', document.getElementById('rango-inicio').value);
+            formData.append('fin', document.getElementById('rango-fin').value);
+            formData.append('categoria_filtro', idCat);
             formData.append('filtrar_duplicados', document.getElementById('filtar-duplicados').checked);
 
             document.getElementById('tabla-container').style.display = 'none';
+            document.getElementById('loader-zona').style.display = 'block';
+            document.getElementById('spinner-percentage').innerText = "0%";
+            document.getElementById('loader-mensaje').innerText = "Iniciando sincronización...";
+            
             iniciarMonitoreoProgreso();
             
             const consola = document.getElementById('resultados');
-            consola.innerText = "⏳ Escaneando hojas del Excel y consultando inventarios en Mercado Libre...";
+            consola.innerText = `⏳ Sincronizando inventario con filtro: [${idCat}]...`;
 
             try {
                 const response = await fetch('/previsualizar', { method: 'POST', body: formData });
@@ -806,10 +760,9 @@ HTML_INTERFACE = """
                 resultado.productos.forEach((prod, idx) => {
                     imagenesPorFila[idx] = [];
                     let imgHtmlPreview = "";
-
                     if (prod.ImagenLocal) {
                         imagenesPorFila[idx].push(prod.ImagenLocal);
-                        imgHtmlPreview = `<img src="${prod.ImagenLocal}" title="Foto local de lote_imagenes">`;
+                        imgHtmlPreview = `<img src="${prod.ImagenLocal}" title="Foto local">`;
                     }
                     
                     atributosPorFila[idx] = {
@@ -830,11 +783,9 @@ HTML_INTERFACE = """
 
                     let badgesHTML = "";
                     for (const [nomCuenta, est] of Object.entries(prod.EstadoCuentas)) {
-                        if (est === "EXISTE") {
-                            badgesHTML += `<span class="account-badge badge-existe">${nomCuenta}: Ya Publicado</span>`;
-                        } else {
-                            badgesHTML += `<span class="account-badge badge-libre">${nomCuenta}: Libre</span>`;
-                        }
+                        badgesHTML += (est === "EXISTE") 
+                            ? `<span class="account-badge badge-existe">${nomCuenta}: Ya Publicado</span>`
+                            : `<span class="account-badge badge-libre">${nomCuenta}: Libre</span>`;
                     }
 
                     tbody.innerHTML += `
@@ -842,7 +793,7 @@ HTML_INTERFACE = """
                             <td><input type="checkbox" class="prod-check" data-idx="${idx}" checked></td>
                             <td>
                                 <input type="text" id="tit-${idx}" value="${prod.Titulo}" maxlength="60" style="margin-bottom:4px; font-weight:bold;">
-                                <div class="cat-tag">Cat ML: ${prod.Categoria_ID}</div>
+                                <div class="cat-tag" title="ID: ${prod.Categoria_ID}">📌 ML: ${prod.CategoriaNombre}</div>
                                 <div style="font-size:11px; color:#64748b; margin-top:2px;">📁 Hoja: <b>${prod.Hoja}</b> (${prod.CategoriaOrigen})</div>
                                 <div style="margin-top:6px;">${badgesHTML}</div>
                                 <input type="hidden" id="cat-${idx}" value="${prod.Categoria_ID}">
@@ -850,7 +801,6 @@ HTML_INTERFACE = """
                             </td>
                             <td><input type="number" id="pre-${idx}" value="${prod.Precio}" step="0.01"></td>
                             <td><input type="number" id="stk-${idx}" value="${prod.Stock}"></td>
-                            
                             <td>
                                 <select id="expo-${idx}" class="select-exposicion attr-select" style="margin-bottom:5px; font-weight:bold;">
                                     <option value="bronze">Bronce / Estándar</option>
@@ -858,30 +808,26 @@ HTML_INTERFACE = """
                                     <option value="gold_pro">Premium</option>
                                 </select>
                                 <select id="envio-${idx}" class="select-envio attr-select" style="font-size:11px; font-weight:bold;">
-                                    <option value="me2_free">🟢 Mercado Envíos - Envío Gratis</option>
+                                    <option value="me2_free">🟢 Envío Gratis</option>
                                     <option value="custom_free">🟢 Envío Gratis Nacional (Custom)</option>
-                                    <option value="me2_buyer">🔵 Mercado Envíos - Cobro en Destino</option>
-                                    <option value="not_specified">⚪ Acordar con el Vendedor</option>
+                                    <option value="me2_buyer">🔵 Cobro en Destino</option>
+                                    <option value="not_specified">⚪ Acordar con Vendedor</option>
                                 </select>
                             </td>
-
                             <td>
                                 <div style="display:grid; grid-template-columns: 1fr 1fr; gap:4px; margin-bottom:4px;">
-                                    <input type="text" id="mar-${idx}" value="${prod.Marca}" placeholder="Marca" title="Marca">
-                                    <input type="text" id="mod-${idx}" value="${prod.Modelo}" placeholder="Modelo" title="Modelo">
+                                    <input type="text" id="mar-${idx}" value="${prod.Marca}" placeholder="Marca">
+                                    <input type="text" id="mod-${idx}" value="${prod.Modelo}" placeholder="Modelo">
                                 </div>
-                                <input type="text" id="sku-${idx}" value="${prod.SKU}" placeholder="Nro. Parte / SKU" style="margin-bottom:4px;" title="SKU o Código de Parte">
-                                
+                                <input type="text" id="sku-${idx}" value="${prod.SKU}" placeholder="SKU" style="margin-bottom:4px;">
                                 <select id="gtin-razon-${idx}" class="attr-select" onchange="toggleGtin(${idx})" style="margin-bottom:4px; font-size:11px; font-weight:bold;">
                                     <option value="CUSTOM" ${selectCustom}>Ingresar Código (GTIN)</option>
                                     <option value="OMITIR" ${selectOmit}>Este producto no posee código</option>
                                 </select>
-                                <input type="text" id="gtin-${idx}" value="${prod.GTIN !== 'N/A' ? prod.GTIN : ''}" placeholder="Ej: 0123456789123" style="display:${gtinDisplay}; margin-bottom:4px;">
-
+                                <input type="text" id="gtin-${idx}" value="${prod.GTIN !== 'N/A' ? prod.GTIN : ''}" style="display:${gtinDisplay}; margin-bottom:4px;">
                                 <button onclick="abrirModal(${idx})" style="background:#0284c7; width:100%; padding:4px; font-size:11px;">🛠️ Ver / Editar + Características</button>
                                 <div id="resumen-attr-${idx}" class="attr-summary">${resumenInit}</div>
                             </td>
-
                             <td>
                                 <div class="photo-manager">
                                     <span>📸 Clic o Arrastra fotos aquí</span>
@@ -894,9 +840,12 @@ HTML_INTERFACE = """
                 });
 
                 document.getElementById('tabla-container').style.display = 'block';
-                consola.innerText = `✅ ¡Sincronización completa! ${resultado.productos.length} artículos cargados en el panel.`;
+                consola.innerText = `✅ ¡Sincronización completa! ${resultado.productos.length} artículos listos.`;
             } catch(e) {
                 consola.innerText = "❌ Error en sincronización: " + e;
+            } finally {
+                if (intervaloProgreso) clearInterval(intervaloProgreso);
+                setTimeout(() => { document.getElementById('loader-zona').style.display = 'none'; }, 500);
             }
         }
 
@@ -909,19 +858,8 @@ HTML_INTERFACE = """
             document.querySelectorAll('.prod-check:checked').forEach(cb => {
                 const idx = cb.dataset.idx;
                 const attr = atributosPorFila[idx];
-                
                 const razonGtin = document.getElementById('gtin-razon-'+idx).value;
-                let gtinFinal = 'OMITIR';
-                if (razonGtin === 'CUSTOM') {
-                    gtinFinal = document.getElementById('gtin-'+idx).value;
-                }
-
-                const skuVal = (document.getElementById('sku-'+idx).value || '').toLowerCase();
-                const titVal = (document.getElementById('tit-'+idx).value || '').toLowerCase();
-                let descFinal = document.getElementById('desc-init-'+idx).value;
-                
-                if (descripcionesCSV[skuVal]) descFinal = descripcionesCSV[skuVal];
-                else if (descripcionesCSV[titVal]) descFinal = descripcionesCSV[titVal];
+                let gtinFinal = (razonGtin === 'CUSTOM') ? document.getElementById('gtin-'+idx).value : 'OMITIR';
 
                 seleccionados.push({
                     "Titulo": document.getElementById('tit-'+idx).value,
@@ -937,24 +875,27 @@ HTML_INTERFACE = """
                     "Color": attr.color,
                     "Compatibilidad": attr.compatibilidad,
                     "Material": attr.material,
-                    "DescripcionCustom": descFinal,
+                    "DescripcionCustom": document.getElementById('desc-init-'+idx).value,
                     "ImagenesB64": imagenesPorFila[idx] || []
                 });
             });
 
             if (!seleccionados.length) return alert('No hay artículos seleccionados.');
+            const cuentaSel = document.getElementById('cuenta-select').value;
+            const nomCuenta = document.getElementById('cuenta-select').options[document.getElementById('cuenta-select').selectedIndex].text;
 
-            const cuentaSeleccionada = document.getElementById('cuenta-select').value;
-            const nombreCuentaText = document.getElementById('cuenta-select').options[document.getElementById('cuenta-select').selectedIndex].text;
+            if (!confirm(`¿Confirmas publicar ${seleccionados.length} artículos en: ${nomCuenta}?`)) return;
 
-            if (!confirm(`¿Confirmas publicar ${seleccionados.length} artículos en: ${nombreCuentaText}?`)) return;
-
+            document.getElementById('loader-zona').style.display = 'block';
+            document.getElementById('spinner-percentage').innerText = "0%";
+            document.getElementById('loader-mensaje').innerText = "Iniciando publicación en lote...";
             iniciarMonitoreoProgreso();
+
             const consola = document.getElementById('resultados');
-            consola.innerText = `🚀 Publicando lote... El sistema omitirá automáticamente en cuentas donde el título ya exista.`;
+            consola.innerText = `🚀 Publicando lote...`;
 
             try {
-                const response = await fetch(`/publicar-lote?cuenta=${cuentaSeleccionada}`, {
+                const response = await fetch(`/publicar-lote?cuenta=${cuentaSel}`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(seleccionados)
                 });
@@ -962,6 +903,9 @@ HTML_INTERFACE = """
                 consola.innerText = resData.detalles.join('\\n');
             } catch(e) {
                 consola.innerText = "❌ Error subiendo lote: " + e;
+            } finally {
+                if (intervaloProgreso) clearInterval(intervaloProgreso);
+                setTimeout(() => { document.getElementById('loader-zona').style.display = 'none'; }, 500);
             }
         }
     </script>
@@ -977,6 +921,10 @@ def obtener_estado_progreso():
 def obtener_cuentas():
     archivos = listar_archivos_token()
     return [{"archivo": a, "nombre": obtener_nombre_cuenta(a)} for a in archivos]
+
+@app.get("/api/categorias-mlv")
+def endpoint_categorias_mlv():
+    return obtener_categorias_raices_mlv()
 
 @app.post("/api/hojas-excel")
 async def obtener_hojas_excel(file: UploadFile = File(...)):
@@ -1000,7 +948,6 @@ async def obtener_hojas_excel(file: UploadFile = File(...)):
                 os.remove(temp_filename)
             except PermissionError:
                 pass
-            
     return {"hojas": hojas}
 
 @app.get("/verificar-tokens")
@@ -1020,12 +967,12 @@ def verificar_tokens_endpoint():
                 nick = user_info.get("nickname", "Desconocido")
                 logs.append(f"✅ [{nombre}] Conexión Activa (Usuario: {nick} - ID: {user_info.get('id')})")
             else:
-                logs.append(f"⚠️ [{nombre}] Token expirado o inválido (Status {res.status_code}). Renovando...")
+                logs.append(f"⚠️ [{nombre}] Token expirado o inválido. Renovando...")
                 nuevo_token, estado = renovar_y_guardar_token(arch, datos)
                 if estado == "OK":
-                    logs.append(f"🔄 [{nombre}] ¡Renovación Exitosa! Nuevo token guardado en {arch}.")
+                    logs.append(f"🔄 [{nombre}] ¡Renovación Exitosa!")
                 else:
-                    logs.append(f"❌ [{nombre}] No se pudo renovar -> Causa: {estado}")
+                    logs.append(f"❌ [{nombre}] No se pudo renovar -> {estado}")
         except Exception as e:
             logs.append(f"❌ [{nombre}] Error leyendo archivo de token: {e}")
     return {"logs": logs}
@@ -1039,7 +986,9 @@ async def previsualizar_archivo(
     file: UploadFile = File(...), 
     cuenta: str = Form(...),
     hoja: str = Form("TODAS"),
-    filtro_especialidad: str = Form("TODO"),
+    inicio: int = Form(1),
+    fin: int = Form(100),
+    categoria_filtro: str = Form("TODAS"),
     filtrar_duplicados: str = Form("true")
 ):
     actualizar_progreso(5, "Cargando archivo en memoria...")
@@ -1064,16 +1013,19 @@ async def previsualizar_archivo(
     headers_ref = {"Authorization": f"Bearer {token_ref}", "Content-Type": "application/json"} if token_ref else {}
 
     try:
-        filas_procesadas = procesar_excel_heuristico(temp_filename, hoja_objetivo=hoja, filtro_especialidad=filtro_especialidad)
+        filas_procesadas = procesar_excel_heuristico(temp_filename, hoja_objetivo=hoja)
     except Exception as e:
         PROGRESO_ACTUAL["activo"] = False
         return {"error": f"Error heurístico leyendo el archivo: {str(e)}"}
 
-    total_filas = len(filas_procesadas)
+    idx_inicio = max(0, inicio - 1)
+    filas_rango = filas_procesadas[idx_inicio:fin]
+    total_filas = len(filas_rango)
+
     productos_activos = []
-    cache_categorias = {}
+    cache_categorias_adivinadas = {}
     
-    for indice, item in enumerate(filas_procesadas):
+    for indice, item in enumerate(filas_rango):
         await asyncio.sleep(0.01)
         porcentaje_actual = int(20 + ((indice + 1) / max(1, total_filas)) * 75)
         
@@ -1109,35 +1061,29 @@ async def previsualizar_archivo(
         nom_hoja = item["Hoja"]
 
         if token_ref:
-            if titulo in cache_categorias:
-                cat_id = cache_categorias[titulo]
+            if titulo in cache_categorias_adivinadas:
+                cat_id, cat_nombre = cache_categorias_adivinadas[titulo]
             else:
-                cat_id = adivinar_categoria(titulo, headers_ref)
-                cache_categorias[titulo] = cat_id
+                cat_id, cat_nombre = adivinar_categoria_y_raiz(titulo, headers_ref)
+                cache_categorias_adivinadas[titulo] = (cat_id, cat_nombre)
         else:
-            cat_id = "MLV-DESCONOCIDA"
+            cat_id, cat_nombre = "MLV-DESCONOCIDA", "Categoría General"
+
+        if not coincide_con_categoria_elegida(titulo, cat_id, categoria_filtro):
+            continue
 
         actualizar_progreso(porcentaje_actual, f"[{indice+1}/{total_filas}] Sincronizando: {titulo[:25]}...")
             
         imagen_emparejada = emparejar_imagen_local(modelo, sku, titulo)
         
         productos_activos.append({
-            "Titulo": titulo,
-            "Precio": precio,
-            "Stock": stock,
-            "Marca": marca,
-            "Modelo": modelo,
-            "SKU": sku,
-            "Color": "",
-            "Compatibilidad": "",
-            "Material": "",
-            "DescripcionCustom": "",
-            "GTIN": "N/A",
-            "Categoria_ID": cat_id,
-            "ImagenLocal": imagen_emparejada,
-            "EstadoCuentas": estado_cuentas,
-            "Hoja": nom_hoja,
-            "CategoriaOrigen": cat_origen
+            "Titulo": titulo, "Precio": precio, "Stock": stock,
+            "Marca": marca, "Modelo": modelo, "SKU": sku, 
+            "Color": "", "Compatibilidad": "", "Material": "",
+            "DescripcionCustom": "", "GTIN": "N/A",
+            "Categoria_ID": cat_id, "CategoriaNombre": cat_nombre,
+            "ImagenLocal": imagen_emparejada, "EstadoCuentas": estado_cuentas,
+            "Hoja": nom_hoja, "CategoriaOrigen": cat_origen
         })
 
     if os.path.exists(temp_filename): os.remove(temp_filename)
@@ -1178,11 +1124,7 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
             actualizar_progreso(porcentaje, f"[{nombre_perfil}] Publicando ({procesados}/{total_items}): {titulo_original[:25]}...")
 
             titulo_x3 = f"{titulo_original}\n{titulo_original}\n{titulo_original}\n"
-            
-            if prod.get('DescripcionCustom'):
-                cuerpo_desc = prod['DescripcionCustom']
-            else:
-                cuerpo_desc = redactar_parrafo_base(titulo_original)
+            cuerpo_desc = prod['DescripcionCustom'] if prod.get('DescripcionCustom') else redactar_parrafo_base(titulo_original)
             
             bloque_ficha = f"""
 ==================================================================
@@ -1196,30 +1138,15 @@ FICHA TÉCNICA DEL PRODUCTO:
 ==================================================================
 """
             descripcion_estructurada = f"{BLOQUE_SUPERIOR}\n{titulo_x3}\n{bloque_ficha}\n{cuerpo_desc}\n{BLOQUE_INFERIOR}"
-
             atributos_payload = construir_atributos_dinamicos(prod, headers)
 
             modo_envio = prod.get('Envio', 'not_specified')
             if modo_envio == "me2_free":
-                shipping_payload = {
-                    "mode": "me2", 
-                    "local_pick_up": True, 
-                    "free_shipping": True
-                }
+                shipping_payload = {"mode": "me2", "local_pick_up": True, "free_shipping": True}
             elif modo_envio == "custom_free":
-                shipping_payload = {
-                    "mode": "custom",
-                    "free_shipping": True,
-                    "costs": [
-                        {"description": "Envío Gratis a Nivel Nacional", "cost": 0}
-                    ]
-                }
+                shipping_payload = {"mode": "custom", "free_shipping": True, "costs": [{"description": "Envío Gratis a Nivel Nacional", "cost": 0}]}
             elif modo_envio == "me2_buyer":
-                shipping_payload = {
-                    "mode": "me2", 
-                    "local_pick_up": True, 
-                    "free_shipping": False
-                }
+                shipping_payload = {"mode": "me2", "local_pick_up": True, "free_shipping": False}
             else:
                 shipping_payload = {"mode": "not_specified", "local_pick_up": True}
 
@@ -1242,62 +1169,41 @@ FICHA TÉCNICA DEL PRODUCTO:
                     pic_id = subir_foto_a_ml(img_b64, token)
                     if pic_id:
                         fotos_payload.append({"id": pic_id})
-            
             if fotos_payload:
                 datos_publicacion["pictures"] = fotos_payload
 
-            respuesta = requests.post("https://api.mercadolibre.com/items", headers=headers, json=datos_publicacion)
+            respuesta = requests.post("https://api.mercadolibre.com/items", headers=headers, json=datos_publicacion, timeout=12)
             
             if respuesta.status_code == 201:
                 item_data = respuesta.json()
                 item_id = item_data.get('id')
                 permalink = item_data.get('permalink')
-                
-                requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json={"text": descripcion_estructurada})
-                
-                put_payload = {
-                    "shipping": shipping_payload,
-                    "attributes": atributos_payload
-                }
-                requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json=put_payload)
-                
+                requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json={"text": descripcion_estructurada}, timeout=10)
+                requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=10)
                 logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO! -> {permalink}")
             else:
                 error_texto = respuesta.text
                 if "restrictions_coliving" in error_texto:
                     titulo_mascarado = re.sub(r'(?i)\b(canon|hp|epson|brother|samsung|apple|sony)\b', 'Compatible', titulo_original)
                     datos_publicacion["title"] = titulo_mascarado
-                    
-                    res_bypass = requests.post("https://api.mercadolibre.com/items", headers=headers, json=datos_publicacion)
+                    res_bypass = requests.post("https://api.mercadolibre.com/items", headers=headers, json=datos_publicacion, timeout=12)
                     if res_bypass.status_code == 201:
                         item_data = res_bypass.json()
                         item_id = item_data.get('id')
                         permalink = item_data.get('permalink')
-                        
-                        requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json={"title": titulo_original})
-                        requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json={"text": descripcion_estructurada})
-                        
-                        put_payload = {"shipping": shipping_payload, "attributes": atributos_payload}
-                        requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json=put_payload)
-                        
+                        requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json={"title": titulo_original}, timeout=10)
+                        requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json={"text": descripcion_estructurada}, timeout=10)
+                        requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=10)
                         logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO (Bypass Catálogo)! -> {permalink}")
                     else:
                         error_data = res_bypass.json()
                         causas = error_data.get('cause', [])
-                        if isinstance(causas, list) and len(causas) > 0:
-                            detalles_list = [c.get('message', str(c)) if isinstance(c, dict) else str(c) for c in causas]
-                            detalles = " | ".join(detalles_list)
-                        else:
-                            detalles = str(error_data.get('message', error_data.get('error', 'Error desconocido en ML')))
+                        detalles = " | ".join([c.get('message', str(c)) if isinstance(c, dict) else str(c) for c in causas]) if (isinstance(causas, list) and len(causas) > 0) else str(error_data.get('message', 'Error ML'))
                         logs_totales.append(f"❌ [{nombre_perfil}] Error '{titulo_original[:15]}...': {detalles}")
                 else:
                     error_data = respuesta.json()
                     causas = error_data.get('cause', [])
-                    if isinstance(causas, list) and len(causas) > 0:
-                        detalles_list = [c.get('message', str(c)) if isinstance(c, dict) else str(c) for c in causas]
-                        detalles = " | ".join(detalles_list)
-                    else:
-                        detalles = str(error_data.get('message', error_data.get('error', 'Error desconocido en ML')))
+                    detalles = " | ".join([c.get('message', str(c)) if isinstance(c, dict) else str(c) for c in causas]) if (isinstance(causas, list) and len(causas) > 0) else str(error_data.get('message', 'Error ML'))
                     logs_totales.append(f"❌ [{nombre_perfil}] Error '{titulo_original[:15]}...': {detalles}")
 
     actualizar_progreso(100, "¡Lote Completado!")
