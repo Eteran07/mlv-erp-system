@@ -19,7 +19,7 @@ from categorizador import (
     obtener_categorias_raices_mlv, adivinar_categoria_y_raiz,
     coincide_con_categoria_elegida
 )
-from excel_parser import procesar_excel_heuristico
+from excel_parser import procesar_excel_heuristico, obtener_encabezados_excel, obtener_vista_previa_excel
 
 load_dotenv()
 app = FastAPI(title="ERP Mercado Libre - Dashboard Definitivo")
@@ -35,7 +35,6 @@ PROGRESO_ACTUAL = {
 
 CACHE_ATRIBUTOS_CAT = {}
 
-# --- PLANTILLA OFICIAL EXACTA DEL DOCUMENTO ---
 BLOQUE_SUPERIOR = "SOMOS TIENDA FÍSICA, Empresa Mayorista Líder en el Mercado de la Computación Producto 100% de calidad"
 
 BLOQUE_INFERIOR = """
@@ -127,78 +126,30 @@ def subir_foto_a_ml(base64_data, token):
         print(f"Error procesando imagen base64: {e}")
     return None
 
-def construir_atributos_dinamicos(prod, headers):
-    atributos = [
+def construir_atributos_dinamicos_dict(prod, attr_adicionales, headers):
+    lista = [
         {"id": "BRAND", "value_name": prod.get("Marca", "Generico")},
         {"id": "MODEL", "value_name": prod.get("Modelo", "Universal")}
     ]
 
     sku = str(prod.get("SKU", "")).strip()
     if sku and sku.lower() != "nan":
-        atributos.append({"id": "SELLER_SKU", "value_name": sku})
-        atributos.append({"id": "PART_NUMBER", "value_name": sku})
-
-    cat_id = prod.get("Categoria_ID")
-    esquema_cat = []
-
-    if cat_id in CACHE_ATRIBUTOS_CAT:
-        esquema_cat = CACHE_ATRIBUTOS_CAT[cat_id]
-    elif headers and cat_id:
-        try:
-            url_attr = f"https://api.mercadolibre.com/categories/{cat_id}/attributes"
-            res = requests.get(url_attr, headers=headers, timeout=5)
-            if res.status_code == 200:
-                esquema_cat = res.json()
-                CACHE_ATRIBUTOS_CAT[cat_id] = esquema_cat
-        except Exception:
-            esquema_cat = []
-
-    color_val = str(prod.get("Color", "")).strip()
-    if color_val and color_val.lower() != "nan":
-        id_color = "COLOR"
-        for attr in esquema_cat:
-            nombre_attr = attr.get("name", "").lower()
-            if "color" in nombre_attr or "tinta" in nombre_attr:
-                id_color = attr.get("id")
-                break
-        atributos.append({"id": id_color, "value_name": color_val})
-
-    PROHIBIDOS_COMPAT = {"HAS_COMPATIBILITIES", "COMPATIBILITIES", "ITEM_CONDITION", "GTIN", "BRAND", "MODEL", "SELLER_SKU", "PART_NUMBER"}
-    compat_val = str(prod.get("Compatibilidad", "")).strip()
-    if compat_val and compat_val.lower() != "nan":
-        id_elegido = None
-        for attr in esquema_cat:
-            aid = attr.get("id", "")
-            aname = attr.get("name", "").lower()
-            if aid in PROHIBIDOS_COMPAT or attr.get("read_only") == True:
-                continue
-            if aid in ["COMPATIBLE_MODELS", "LINE", "SERIES", "COMPATIBLE_PRINTERS", "COMPATIBLE_BRANDS"]:
-                id_elegido = aid
-                break
-            elif any(p in aname for p in ["compatib", "modelos compatibles", "impresoras", "línea", "linea"]):
-                id_elegido = aid
-                break
-        if not id_elegido:
-            id_elegido = "COMPATIBLE_MODELS"
-        atributos.append({"id": id_elegido, "value_name": compat_val})
-
-    mat_val = str(prod.get("Material", "")).strip()
-    if mat_val and mat_val.lower() != "nan":
-        id_mat = "MATERIAL"
-        for attr in esquema_cat:
-            nombre_attr = attr.get("name", "").lower()
-            if any(palabra in nombre_attr for palabra in ["material", "tipo", "rendimiento", "especificac"]):
-                id_mat = attr.get("id")
-                break
-        atributos.append({"id": id_mat, "value_name": mat_val})
+        lista.append({"id": "SELLER_SKU", "value_name": sku})
+        lista.append({"id": "PART_NUMBER", "value_name": sku})
 
     gtin_val = str(prod.get("GTIN", "OMITIR")).strip()
     if gtin_val != "OMITIR" and gtin_val and gtin_val.lower() != "nan":
         gtin_solo_numeros = re.sub(r'\D', '', gtin_val)
         if len(gtin_solo_numeros) >= 8:
-            atributos.append({"id": "GTIN", "value_name": gtin_solo_numeros})
+            lista.append({"id": "GTIN", "value_name": gtin_solo_numeros})
 
-    return atributos
+    PROHIBIDOS = {"BRAND", "MODEL", "SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES"}
+    if attr_adicionales and isinstance(attr_adicionales, dict):
+        for k_id, v_val in attr_adicionales.items():
+            if k_id not in PROHIBIDOS and str(v_val).strip() != "":
+                lista.append({"id": k_id, "value_name": str(v_val).strip()})
+
+    return lista
 
 HTML_INTERFACE = """
 <!DOCTYPE html>
@@ -208,65 +159,107 @@ HTML_INTERFACE = """
     <title>ERP Mercado Libre - Dashboard Definitivo</title>
     <style>
         * { box-sizing: border-box; }
-        body { font-family: 'Segoe UI', sans-serif; background: #f1f5f9; margin: 0; display: flex; min-height: 100vh; }
-        .sidebar { width: 260px; background: #0f172a; color: white; transition: width 0.3s; display: flex; flex-direction: column; flex-shrink: 0; }
+        body { font-family: 'Segoe UI', sans-serif; background: #f8fafc; margin: 0; display: flex; min-height: 100vh; color: #1e293b; }
+        
+        .sidebar { width: 260px; background: linear-gradient(180deg, #0f172a 0%, #1e1b4b 100%); color: white; transition: width 0.3s; display: flex; flex-direction: column; flex-shrink: 0; border-right: 1px solid #312e81; }
         .sidebar.collapsed { width: 65px; }
-        .sidebar-header { padding: 20px 15px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #1e293b; }
-        .logo-text { font-weight: bold; font-size: 16px; white-space: nowrap; overflow: hidden; }
+        .sidebar-header { padding: 22px 15px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        .logo-text { font-weight: 800; font-size: 16px; white-space: nowrap; overflow: hidden; color: #38bdf8; text-shadow: 0 0 10px rgba(56,189,248,0.3); }
         .sidebar.collapsed .logo-text { display: none; }
-        .toggle-btn { background: #1e293b; color: white; border: none; padding: 6px 10px; border-radius: 4px; cursor: pointer; }
-        .nav-menu { list-style: none; padding: 10px 0; margin: 0; }
-        .nav-item { padding: 14px 18px; display: flex; align-items: center; gap: 12px; cursor: pointer; transition: 0.2s; color: #94a3b8; font-size: 14px; font-weight: bold; }
-        .nav-item:hover, .nav-item.active { background: #1e293b; color: #38bdf8; border-left: 4px solid #38bdf8; }
+        .toggle-btn { background: rgba(255,255,255,0.1); color: white; border: none; padding: 6px 10px; border-radius: 6px; cursor: pointer; transition: 0.2s; }
+        .toggle-btn:hover { background: rgba(255,255,255,0.2); }
+        
+        .nav-menu { list-style: none; padding: 15px 0; margin: 0; }
+        .nav-item { padding: 15px 20px; display: flex; align-items: center; gap: 14px; cursor: pointer; transition: 0.2s; color: #cbd5e1; font-size: 14px; font-weight: 600; border-left: 4px solid transparent; }
+        .nav-item:hover { background: rgba(255,255,255,0.05); color: #fff; }
+        .nav-item.active { background: rgba(56,189,248,0.15); color: #38bdf8; border-left-color: #38bdf8; }
         .sidebar.collapsed .nav-text { display: none; }
-        .main-content { flex-grow: 1; padding: 25px; overflow-x: auto; }
+        
+        .main-content { flex-grow: 1; padding: 30px; overflow-x: auto; }
         .section-view { display: none; }
         .section-view.active { display: block; }
-        .container { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
-        h1 { color: #1e293b; margin-top: 0; font-size: 24px; }
-        .subtitle { color: #64748b; font-size: 14px; margin-bottom: 20px; }
-        .panel-control { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr; gap: 15px; background: #f8fafc; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #e2e8f0; }
-        .control-group { display: flex; flex-direction: column; gap: 5px; }
-        label { font-weight: bold; font-size: 13px; color: #334155; }
-        input[type="file"], select { padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px; background: white; font-size: 13px; }
-        button { background: #0284c7; color: white; border: none; padding: 11px; font-weight: bold; border-radius: 4px; cursor: pointer; transition: 0.2s; }
-        button:hover { background: #0369a1; }
-        .loader-container { display: none; text-align: center; padding: 40px; background: #f8fafc; border-radius: 12px; margin: 20px 0; border: 2px dashed #0284c7; }
+        .container { background: white; padding: 30px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.04); border: 1px solid #e2e8f0; }
+        h1 { color: #0f172a; margin-top: 0; font-size: 26px; font-weight: 800; }
+        .subtitle { color: #475569; font-size: 14px; margin-bottom: 25px; }
+        
+        .steps-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 25px; }
+        .step-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; transition: 0.2s; position: relative; overflow: hidden; }
+        .step-card:hover { border-color: #0284c7; box-shadow: 0 4px 12px rgba(2,132,199,0.08); }
+        .step-num { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; color: #0284c7; margin-bottom: 6px; display: block; }
+        .step-card label { font-weight: 700; font-size: 13px; color: #1e293b; display: block; margin-bottom: 8px; }
+        
+        input[type="file"], select, input[type="number"], input[type="text"] { width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px; background: white; font-size: 13px; color: #0f172a; transition: 0.2s; }
+        input:focus, select:focus { border-color: #0284c7; outline: none; box-shadow: 0 0 0 3px rgba(2,132,199,0.15); }
+        
+        button { background: #0284c7; color: white; border: none; padding: 12px 18px; font-weight: 700; border-radius: 8px; cursor: pointer; transition: 0.2s; font-size: 14px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+        button:hover { background: #0369a1; transform: translateY(-1px); }
+        button:active { transform: translateY(0); }
+        
+        .mapping-bar { display: none; background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); border: 1px solid #bae6fd; padding: 20px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 4px 15px rgba(2,132,199,0.05); }
+        .mapping-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-top: 15px; }
+        .mapping-grid label { font-size: 12px; font-weight: 700; color: #0369a1; margin-bottom: 4px; display: block; }
+        
+        .excel-preview-box { margin-top: 18px; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; overflow: hidden; }
+        .excel-preview-header { background: #f1f5f9; padding: 10px 15px; font-size: 13px; font-weight: 700; color: #0f172a; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0; }
+        .excel-preview-nav { display: flex; gap: 8px; align-items: center; }
+        .excel-nav-btn { background: #0284c7; color: white; border: none; padding: 5px 12px; border-radius: 6px; font-size: 11px; cursor: pointer; font-weight: 700; }
+        .excel-nav-btn:disabled { background: #94a3b8; cursor: default; }
+        .excel-table-preview { width: 100%; border-collapse: collapse; font-size: 11px; }
+        .excel-table-preview th, .excel-table-preview td { border: 1px solid #e2e8f0; padding: 6px 10px; text-align: left; }
+        .excel-table-preview th { background: #eff6ff; color: #1d4ed8; font-weight: 700; }
+        
+        .loader-container { display: none; text-align: center; padding: 50px; background: #f8fafc; border-radius: 16px; margin: 20px 0; border: 2px dashed #38bdf8; }
         .spinner-wrapper { position: relative; width: 80px; height: 80px; margin: 0 auto 15px auto; }
         .spinner-circle { box-sizing: border-box; width: 100%; height: 100%; border: 8px solid #e2e8f0; border-top-color: #0284c7; border-radius: 50%; animation: spin 1s linear infinite; }
-        .spinner-percentage { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 16px; color: #0284c7; }
+        .spinner-percentage { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 16px; color: #0284c7; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .bulk-toolbar { display: flex; flex-wrap: wrap; gap: 12px; background: #e0f2fe; padding: 12px 18px; border-radius: 6px; margin-bottom: 15px; align-items: center; border: 1px solid #bae6fd; }
-        .bulk-select { padding: 6px; font-size: 12px; border-radius: 4px; border: 1px solid #7dd3fc; }
-        .bulk-btn { background: #0284c7; color: white; border: none; padding: 7px 14px; font-size: 12px; border-radius: 4px; cursor: pointer; font-weight: bold; }
-        table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
-        th, td { border: 1px solid #e2e8f0; padding: 8px; vertical-align: top;}
-        th { background: #1e293b; color: white; }
-        .account-badge { display: inline-block; padding: 3px 8px; border-radius: 12px; font-size: 11px; font-weight: bold; margin-top: 4px; margin-right: 4px; }
-        .badge-libre { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
-        .badge-existe { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
-        .log-box { background: #0f172a; color: #4ade80; padding: 15px; height: 250px; overflow-y: auto; font-family: monospace; border-radius: 5px; margin-top: 20px; white-space: pre-wrap; font-size: 12px;}
         
-        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.65); z-index: 2000; justify-content: center; align-items: center; }
-        .modal-box { background: white; padding: 30px; border-radius: 12px; width: 600px; max-width: 95%; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
-        .modal-box h3 { margin-top: 0; color: #0f172a; border-bottom: 2px solid #0284c7; padding-bottom: 10px; font-size: 18px; }
+        .bulk-toolbar { display: flex; flex-wrap: wrap; gap: 12px; background: #f8fafc; padding: 16px; border-radius: 12px; margin-bottom: 20px; align-items: center; border: 1px solid #e2e8f0; }
+        .bulk-select { padding: 8px 12px; font-size: 13px; border-radius: 6px; border: 1px solid #cbd5e1; background: white; }
+        .bulk-btn { background: #7e22ce; color: white; border: none; padding: 8px 16px; font-size: 12px; border-radius: 6px; cursor: pointer; font-weight: 700; }
+        .bulk-btn:hover { background: #6b21a8; }
         
-        .modal-grid { display: flex; flex-direction: column; gap: 12px; margin-top: 15px; }
-        .modal-field { display: flex; flex-direction: column; gap: 4px; }
-        .modal-field label { font-size: 12px; font-weight: bold; color: #334155; }
-        .modal-field input { width: 100%; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; background: #fff; }
-
-        .category-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-height: 380px; overflow-y: auto; margin: 15px 0; padding-right: 5px; }
-        .category-item { border: 1px solid #cbd5e1; padding: 12px; border-radius: 6px; cursor: pointer; transition: 0.2s; font-size: 13px; font-weight: bold; color: #334155; display: flex; align-items: center; gap: 8px; }
-        .category-item:hover { background: #f0f9ff; border-color: #0284c7; color: #0284c7; }
+        table.data-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; margin-top: 10px; border-radius: 10px; overflow: hidden; border: 1px solid #e2e8f0; }
+        table.data-table th, table.data-table td { padding: 12px 10px; vertical-align: top; border-bottom: 1px solid #e2e8f0; }
+        table.data-table th { background: #0f172a; color: white; font-weight: 700; text-align: left; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
+        table.data-table tbody tr:nth-child(even) { background: #f8fafc; }
+        table.data-table tbody tr:hover { background: #f1f5f9; }
+        
+        .account-badge { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; margin-top: 6px; margin-right: 4px; }
+        .badge-libre { background: #dcfce7; color: #15803d; border: 1px solid #86efac; }
+        .badge-existe { background: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5; }
+        
+        .cat-tag { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; background: #e0f2fe; color: #0369a1; margin-top: 4px; }
+        .desc-tag { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; background: #dcfce7; color: #15803d; margin-top: 4px; }
+        .attr-summary { font-size: 11px; color: #334155; background: #f1f5f9; padding: 8px 10px; border-radius: 6px; margin-top: 6px; border-left: 3px solid #0284c7; font-weight: 600; }
+        
+        .log-box { background: #0f172a; color: #4ade80; padding: 20px; height: 260px; overflow-y: auto; font-family: 'Consolas', monospace; border-radius: 10px; margin-top: 25px; white-space: pre-wrap; font-size: 12px; line-height: 1.5; border: 1px solid #334155; }
+        
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(15,23,42,0.75); z-index: 2000; justify-content: center; align-items: center; backdrop-filter: blur(4px); }
+        .modal-box { background: white; padding: 32px; border-radius: 16px; width: 680px; max-width: 95%; box-shadow: 0 20px 50px rgba(0,0,0,0.3); border: 1px solid #e2e8f0; }
+        .modal-box h3 { margin-top: 0; color: #0f172a; border-bottom: 2px solid #0284c7; padding-bottom: 12px; font-size: 18px; font-weight: 800; }
+        
+        .modal-grid { display: flex; flex-direction: column; gap: 14px; margin-top: 15px; max-height: 420px; overflow-y: auto; padding-right: 8px; }
+        .modal-field { display: flex; flex-direction: column; gap: 6px; }
+        .modal-field label { font-size: 12px; font-weight: 700; color: #334155; }
+        
+        .category-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; max-height: 380px; overflow-y: auto; margin: 15px 0; padding-right: 5px; }
+        .category-item { border: 1px solid #cbd5e1; padding: 14px; border-radius: 10px; cursor: pointer; transition: 0.2s; font-size: 13px; font-weight: 700; color: #334155; display: flex; align-items: center; gap: 10px; background: #f8fafc; }
+        .category-item:hover { background: #eff6ff; border-color: #0284c7; color: #0284c7; }
         .category-item.selected { background: #e0f2fe; border-color: #0284c7; color: #0369a1; box-shadow: 0 0 0 2px #0284c7; }
         
-        .photo-manager { border: 2px dashed #aaa; padding: 8px; text-align: center; border-radius: 6px; background: #fafafa; cursor: pointer; position: relative;}
+        .photo-manager { border: 2px dashed #94a3b8; padding: 12px; text-align: center; border-radius: 8px; background: #f8fafc; cursor: pointer; position: relative; transition: 0.2s; font-weight: 600; color: #475569; }
+        .photo-manager:hover { border-color: #0284c7; background: #eff6ff; color: #0284c7; }
         .photo-manager input[type="file"] { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
-        .preview-container { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; justify-content: center; }
-        .preview-container img { width: 42px; height: 42px; object-fit: cover; border-radius: 4px; border: 1px solid #ccc; }
-        .attr-summary { font-size: 11px; color: #334155; background: #f1f5f9; padding: 5px; border-radius: 4px; margin-top: 5px; border-left: 3px solid #0284c7; }
-        .desc-tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; background: #e0e7ff; color: #0891b2; margin-top: 4px; }
+        .preview-container { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; justify-content: center; }
+        .thumb-wrap { position: relative; display: inline-block; }
+        .thumb-wrap img { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; border: 1px solid #cbd5e1; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        .del-photo-btn { position: absolute; top: -6px; right: -6px; background: #ef4444; color: white; border: none; border-radius: 50%; width: 20px; height: 20px; font-size: 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-weight: bold; }
+        
+        .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 16px; margin-top: 20px; }
+        .gallery-item { background: white; border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.03); }
+        .gallery-item img { width: 100%; height: 110px; object-fit: contain; border-radius: 6px; background: #f8fafc; }
+        .gallery-item span { display: block; font-size: 11px; font-weight: 700; color: #334155; margin-top: 8px; word-break: break-all; }
     </style>
 </head>
 <body>
@@ -280,53 +273,93 @@ HTML_INTERFACE = """
                 <span>📦</span> <span class="nav-text">Sincronización & Lotes</span>
             </li>
             <li class="nav-item" onclick="mostrarSeccion('tab-tokens', this)">
-                <span>🔑</span> <span class="nav-text">Estado de Cuentas & Tokens</span>
+                <span>🔑</span> <span class="nav-text">Cuentas & Tokens</span>
             </li>
             <li class="nav-item" onclick="mostrarSeccion('tab-csv', this)">
-                <span>📄</span> <span class="nav-text">Carga de Descripciones CSV</span>
+                <span>📄</span> <span class="nav-text">Descripciones CSV</span>
+            </li>
+            <li class="nav-item" onclick="mostrarSeccion('tab-galeria', this); cargarGaleriaLocal();">
+                <span>🖼️</span> <span class="nav-text">Galería Local (lote_imagenes)</span>
             </li>
         </ul>
     </div>
 
     <div class="main-content">
+        <!-- PESTAÑA 1: MAESTRO -->
         <div id="tab-maestro" class="section-view active">
             <div class="container">
                 <h1>📦 Panel Maestro de Sincronización y Publicación</h1>
-                <div class="subtitle">Selector Oficial de Categorías MLV, Detección de Hojas y Plantilla de Descripción Oficial</div>
+                <div class="subtitle">Selector Oficial MLV, Mapeo Manual Visual y Filtro Anti-Basura Estricto</div>
                 
-                <div class="panel-control">
-                    <div class="control-group">
-                        <label>1. Cuenta / Modo Destino:</label>
+                <div class="steps-grid">
+                    <div class="step-card">
+                        <span class="step-num">Paso 1</span>
+                        <label>Cuenta / Perfil ML:</label>
                         <select id="cuenta-select"></select>
                     </div>
-                    <div class="control-group">
-                        <label>2. Inventario (.xlsx / .csv):</label>
-                        <input type="file" id="file-db" accept=".xlsx, .csv" onchange="detectarHojasExcel(this)">
+                    <div class="step-card">
+                        <span class="step-num">Paso 2</span>
+                        <label>Inventario (.xlsx / .csv):</label>
+                        <input type="file" id="file-db" accept=".xlsx, .csv" onchange="detectarHojasYVistaPrevia(this)">
                     </div>
-                    <div class="control-group">
-                        <label>3. Pestaña / Hoja a Escanear:</label>
-                        <select id="hoja-select">
+                    <div class="step-card">
+                        <span class="step-num">Paso 3</span>
+                        <label>Hoja a Escanear:</label>
+                        <select id="hoja-select" onchange="cambiarHojaSeleccionada()">
                             <option value="TODAS">📚 Todo el Libro (Todas las Hojas)</option>
                         </select>
                     </div>
-                    <div class="control-group">
-                        <label>4. Rango de filas:</label>
+                    <div class="step-card">
+                        <span class="step-num">Paso 4</span>
+                        <label>Rango de filas:</label>
                         <div style="display: flex; gap: 8px;">
                             <input type="number" id="rango-inicio" value="1" placeholder="Desde" style="width: 50%;">
                             <input type="number" id="rango-fin" value="100" placeholder="Hasta" style="width: 50%;">
                         </div>
                     </div>
-                    <div class="control-group">
-                        <label>5. Filtro Duplicados:</label>
-                        <div style="display: flex; align-items: center; gap: 5px; margin-top: 6px;">
-                            <input type="checkbox" id="filtar-duplicados" checked>
-                            <span style="font-size: 12px; color: #444;">Ocultar YA EXISTENTES</span>
+                    <div class="step-card">
+                        <span class="step-num">Paso 5</span>
+                        <label>Ocultar Publicados:</label>
+                        <div style="display: flex; align-items: center; gap: 8px; margin-top: 10px;">
+                            <input type="checkbox" id="filtar-duplicados" checked style="width: auto;">
+                            <span style="font-size: 12px; font-weight: 600; color: #475569;">Solo mostrar Libres</span>
                         </div>
                     </div>
-                    <div class="control-group" style="grid-column: span 3;">
-                        <button onclick="abrirModalCategorias()" style="width: 100%; font-size: 15px; background: #0284c7;">
-                            🔍 Sincronizar y Elegir Categoría Oficial ML
-                        </button>
+                </div>
+
+                <div style="margin-bottom: 25px;">
+                    <button onclick="abrirModalCategorias()" style="width: 100%; padding: 14px; font-size: 15px; background: #0284c7;">
+                        🔍 Sincronizar y Elegir Categoría Oficial ML
+                    </button>
+                </div>
+
+                <!-- MAPEO MANUAL Y VISTA PREVIA VISUAL DEL EXCEL -->
+                <div id="mapping-bar" class="mapping-bar">
+                    <h4 style="margin: 0 0 5px 0; color: #0369a1; font-size: 15px; font-weight: 800;">🎯 Mapeo Manual de Columnas y Vista Previa en Vivo:</h4>
+                    <span style="font-size: 13px; color: #0284c7; font-weight: 600;">Selecciona las columnas de tu Excel o deja "-- Automático --" para que la heurística las detecte. Verifica en la tabla inferior qué contiene cada celda:</span>
+                    <div class="mapping-grid">
+                        <div><label>Título:</label><select id="map-tit"><option value="">-- Automático --</option></select></div>
+                        <div><label>SKU / Código:</label><select id="map-sku"><option value="">-- Automático --</option></select></div>
+                        <div><label>Modelo:</label><select id="map-mod"><option value="">-- Automático --</option></select></div>
+                        <div><label>Precio:</label><select id="map-pre"><option value="">-- Automático --</option></select></div>
+                        <div><label>Stock:</label><select id="map-stk"><option value="">-- Automático --</option></select></div>
+                    </div>
+
+                    <div id="excel-preview-box" class="excel-preview-box">
+                        <div class="excel-preview-header">
+                            <span id="excel-preview-title">📊 Vista Previa del Excel</span>
+                            <div id="excel-preview-nav" class="excel-preview-nav" style="display:none;">
+                                <button type="button" class="excel-nav-btn" onclick="cambiarHojaPreview(-1)">⬅️ Hoja Anterior</button>
+                                <span id="excel-preview-counter" style="color:#0f172a; font-weight:bold;">Hoja 1 de 1</span>
+                                <button type="button" class="excel-nav-btn" onclick="cambiarHojaPreview(1)">Siguiente Hoja ➡️</button>
+                            </div>
+                        </div>
+                        <div style="overflow-x: auto; max-height: 250px;">
+                            <table class="excel-table-preview" id="excel-preview-table">
+                                <thead id="excel-preview-thead"></thead>
+                                <tbody id="excel-preview-tbody"></tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
 
@@ -335,12 +368,12 @@ HTML_INTERFACE = """
                         <div class="spinner-circle"></div>
                         <div id="spinner-percentage" class="spinner-percentage">0%</div>
                     </div>
-                    <div id="loader-mensaje" style="font-weight:bold; color:#1e293b; font-size:16px;">Analizando inventario...</div>
+                    <div id="loader-mensaje" style="font-weight:800; color:#0f172a; font-size:16px;">Analizando inventario...</div>
                 </div>
 
                 <div id="tabla-container" style="display: none;">
                     <div class="bulk-toolbar">
-                        <span>⚡ Edición Masiva:</span>
+                        <span style="font-weight: 800; color: #0f172a;">⚡ ACCIONES MASIVAS:</span>
                         <select id="bulk-exposicion" class="bulk-select">
                             <option value="bronze">Exposición: Bronce / Estándar</option>
                             <option value="gold_special">Exposición: Clásica</option>
@@ -348,7 +381,7 @@ HTML_INTERFACE = """
                         </select>
                         <button class="bulk-btn" onclick="aplicarExposicionMasiva()">Aplicar Exposición</button>
                         
-                        <select id="bulk-envio" class="bulk-select" style="margin-left:5px;">
+                        <select id="bulk-envio" class="bulk-select" style="margin-left:8px;">
                             <option value="me2_free">🟢 Mercado Envíos - Envío Gratis</option>
                             <option value="custom_free">🟢 Envío Gratis Nacional (Custom)</option>
                             <option value="me2_buyer">🔵 Mercado Envíos - Cobro en Destino</option>
@@ -356,39 +389,43 @@ HTML_INTERFACE = """
                         </select>
                         <button class="bulk-btn" onclick="aplicarEnvioMasivo()">Aplicar Envío</button>
 
-                        <button class="bulk-btn" onclick="abrirModalMasivo()" style="background:#7e22ce; margin-left:10px;">⚡ Llenar Características Lote</button>
+                        <button class="bulk-btn" onclick="abrirModalMasivo()" style="margin-left:auto; background:#7e22ce;">⚡ Llenar Características Lote</button>
                     </div>
 
-                    <table id="data-table">
+                    <table class="data-table" id="data-table">
                         <thead>
                             <tr>
                                 <th style="width: 30px;"><input type="checkbox" checked onclick="toggleAll(this)"></th>
-                                <th style="width: 22%;">Título, Categoría & Estado por Cuenta</th>
-                                <th style="width: 7%;">Precio $</th>
+                                <th style="width: 24%;">Título, Categoría & Estado por Cuenta</th>
+                                <th style="width: 8%;">Precio $</th>
                                 <th style="width: 6%;">Stock</th>
                                 <th style="width: 16%;">Exposición & Envío</th>
-                                <th style="width: 27%;">Ficha Técnica (Marca / Modelo / SKU / GTIN)</th>
-                                <th style="width: 22%;">Gestor de Fotos Local</th>
+                                <th style="width: 26%;">Ficha Técnica (Marca / Modelo / SKU / GTIN)</th>
+                                <th style="width: 20%;">Gestor de Fotos Local</th>
                             </tr>
                         </thead>
                         <tbody id="tabla-body"></tbody>
                     </table>
-                    <button onclick="ejecutarPublicacion()" style="background: #16a34a; width: 100%; margin-top: 20px; padding: 16px; font-size: 16px;">🚀 Confirmar y Publicar Lote (Inteligente: Salta lo repetido)</button>
+                    <button onclick="ejecutarPublicacion()" style="background: #16a34a; width: 100%; margin-top: 25px; padding: 16px; font-size: 16px; font-weight:800;">
+                        🚀 Confirmar y Publicar Lote (Inteligente: Salta lo repetido)
+                    </button>
                 </div>
 
                 <div id="resultados" class="log-box">Esperando sincronización de inventario...</div>
             </div>
         </div>
 
+        <!-- PESTAÑA 2: TOKENS -->
         <div id="tab-tokens" class="section-view">
             <div class="container">
                 <h1>🔑 Estado y Diagnóstico en Vivo de Cuentas</h1>
                 <div class="subtitle">Prueba la conexión y la renovación automática de tokens sin salir de tu panel</div>
                 <button onclick="verificarTokens()" style="padding: 12px 25px; font-size: 15px;">🔄 Probar Conexión y Renovar Tokens Ahora</button>
-                <div id="log-tokens" class="log-box" style="height: 350px;">Presiona el botón para verificar la salud de los tokens de Jesús y Rafael...</div>
+                <div id="log-tokens" class="log-box" style="height: 350px;">Presiona el botón para verificar la salud de los tokens...</div>
             </div>
         </div>
 
+        <!-- PESTAÑA 3: CSV DESCRIPCIONES -->
         <div id="tab-csv" class="section-view">
             <div class="container">
                 <h1>📄 Asignación Masiva de Descripciones (.CSV)</h1>
@@ -398,11 +435,25 @@ HTML_INTERFACE = """
                     <code style="background:#e2e8f0; padding:5px 10px; border-radius:4px; display:block; margin-bottom:10px;">SKU,Descripcion Personalizada</code>
                     <code style="background:#e2e8f0; padding:5px 10px; border-radius:4px; display:block;">MXP-GI11C,Botella de tinta cian original alta resolución para cartuchos...</code>
                 </div>
-                <label style="background: #16a34a; color: white; padding: 12px 20px; border-radius: 4px; cursor: pointer; font-weight: bold; display: inline-block;">
+                <label style="background: #16a34a; color: white; padding: 12px 20px; border-radius: 8px; cursor: pointer; font-weight: 700; display: inline-block;">
                     <span>📂 Seleccionar Archivo CSV de Descripciones</span>
                     <input type="file" accept=".csv" style="display:none;" onchange="cargarDescripcionesCSV(this)">
                 </label>
-                <p id="csv-status" style="font-weight:bold; color:#16a34a; margin-top:15px;"></p>
+                <p id="csv-status" style="font-weight:700; color:#16a34a; margin-top:15px;"></p>
+            </div>
+        </div>
+
+        <!-- PESTAÑA 4: GALERÍA LOCAL DE IMÁGENES -->
+        <div id="tab-galeria" class="section-view">
+            <div class="container">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div>
+                        <h1 style="margin:0;">🖼️ Galería Local de Imágenes (Carpeta: lote_imagenes)</h1>
+                        <div class="subtitle" style="margin-bottom:0;">Verifica visualmente en tiempo real todas las fotos que el sistema tiene listas para emparejar</div>
+                    </div>
+                    <button onclick="cargarGaleriaLocal()" style="background:#0284c7; padding:10px 18px;">🔄 Actualizar Galería</button>
+                </div>
+                <div id="galeria-contenedor" class="gallery-grid"></div>
             </div>
         </div>
     </div>
@@ -411,7 +462,7 @@ HTML_INTERFACE = """
     <div id="modal-categoria-mlv" class="modal-overlay">
         <div class="modal-box">
             <h3>🏷️ Selecciona una Categoría Oficial de Mercado Libre</h3>
-            <p style="font-size:13px; color:#64748b; margin-bottom:10px;">
+            <p style="font-size:13px; color:#475569; margin-bottom:10px;">
                 Filtra tu rango de filas por un rubro oficial para mayor precisión, o elige cargar absolutamente todo el inventario:
             </p>
             <div id="lista-categorias-ml" class="category-grid"></div>
@@ -429,7 +480,7 @@ HTML_INTERFACE = """
     <div id="modal-bulk-atributos" class="modal-overlay">
         <div class="modal-box">
             <h3 style="color:#7e22ce;">⚡ Llenado Masivo de Características</h3>
-            <p style="font-size:12px; color:#64748b;">Los atributos que llenes aquí se aplicarán a todos los artículos marcados con check.</p>
+            <p style="font-size:12px; color:#475569;">Los atributos que llenes aquí se aplicarán a todos los artículos marcados con check.</p>
             <div class="modal-grid">
                 <div class="modal-field"><label>Marca (Común para el lote):</label><input type="text" id="bm-mar" placeholder="Ej: MAXIPRINT"></div>
                 <div class="modal-field"><label>Color (Común para el lote):</label><input type="text" id="bm-color" placeholder="Ej: Negro / Cian"></div>
@@ -443,21 +494,17 @@ HTML_INTERFACE = """
         </div>
     </div>
 
-    <!-- MODAL INDIVIDUAL -->
+    <!-- MODAL INDIVIDUAL DINÁMICO (CON LISTAS SUGERIDAS DE MLV) -->
     <div id="modal-atributos" class="modal-overlay">
         <div class="modal-box">
-            <h3>🛠️ Editar Características del Producto</h3>
+            <h3>🛠️ Editar Características Oficiales de Mercado Libre</h3>
             <input type="hidden" id="modal-idx">
-            <div class="modal-grid">
-                <div class="modal-field"><label>Marca:</label><input type="text" id="m-mar"></div>
-                <div class="modal-field"><label>Modelo:</label><input type="text" id="m-mod"></div>
-                <div class="modal-field"><label>Color:</label><input type="text" id="m-color"></div>
-                <div class="modal-field"><label>Compatibilidad / Rendimiento:</label><input type="text" id="m-compat"></div>
-                <div class="modal-field"><label>Material / Especificación Adicional:</label><input type="text" id="m-mat"></div>
+            <div id="modal-attr-dinamicos" class="modal-grid">
+                <div style="text-align:center; padding:20px; color:#64748b;">⏳ Cargando ficha técnica de Mercado Libre...</div>
             </div>
             <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
                 <button onclick="cerrarModal()" style="background:#64748b;">Cancelar</button>
-                <button onclick="guardarAtributosModal()">💾 Guardar Cambios</button>
+                <button onclick="guardarAtributosModal()" style="background:#0284c7;">💾 Guardar Ficha Técnica</button>
             </div>
         </div>
     </div>
@@ -465,8 +512,12 @@ HTML_INTERFACE = """
     <script>
         const imagenesPorFila = {};
         const atributosPorFila = {};
+        const atributosAdicionalesPorFila = {};
         const descripcionesCSV = {};
         let intervaloProgreso = null;
+        
+        let datosVistaPrevia = [];
+        let indiceHojaPreview = 0;
 
         function toggleSidebar() {
             document.getElementById('sidebar').classList.toggle('collapsed');
@@ -492,7 +543,8 @@ HTML_INTERFACE = """
             }
         };
 
-        async function detectarHojasExcel(inputElement) {
+        // DETECCIÓN DE HOJAS, COLUMNAS Y VISTA PREVIA VISUAL INTELIGENTE
+        async function detectarHojasYVistaPrevia(inputElement) {
             const file = inputElement.files[0];
             const selectHoja = document.getElementById('hoja-select');
             if (!file) return;
@@ -502,16 +554,147 @@ HTML_INTERFACE = """
             formData.append('file', file);
 
             try {
-                const res = await fetch('/api/hojas-excel', { method: 'POST', body: formData });
+                const res = await fetch('/api/vista-previa-excel', { method: 'POST', body: formData });
                 const data = await res.json();
                 
+                datosVistaPrevia = data.vistas || [];
                 selectHoja.innerHTML = '<option value="TODAS">📚 Todo el Libro (Todas las Hojas)</option>';
-                data.hojas.forEach(nombreHoja => {
-                    selectHoja.innerHTML += `<option value="${nombreHoja}">📄 ${nombreHoja}</option>`;
+                datosVistaPrevia.forEach(item => {
+                    selectHoja.innerHTML += `<option value="${item.nombre}">📄 ${item.nombre}</option>`;
                 });
+                
+                cambiarHojaSeleccionada();
             } catch(e) {
                 selectHoja.innerHTML = '<option value="TODAS">📚 Todo el Libro (Todas las Hojas)</option>';
             }
+        }
+
+        function cambiarHojaSeleccionada() {
+            const val = document.getElementById('hoja-select').value;
+            if (val === "TODAS") {
+                indiceHojaPreview = 0;
+            } else {
+                const idx = datosVistaPrevia.findIndex(item => item.nombre === val);
+                indiceHojaPreview = (idx >= 0) ? idx : 0;
+            }
+            renderizarVistaPreviaExcel(val === "TODAS");
+            poblarSelectoresMapeo(indiceHojaPreview);
+        }
+
+        function cambiarHojaPreview(delta) {
+            const total = datosVistaPrevia.length;
+            if (total === 0) return;
+            indiceHojaPreview = (indiceHojaPreview + delta + total) % total;
+            renderizarVistaPreviaExcel(true);
+            poblarSelectoresMapeo(indiceHojaPreview);
+        }
+
+        function renderizarVistaPreviaExcel(esTodas) {
+            if (!datosVistaPrevia.length) return;
+            const vista = datosVistaPrevia[indiceHojaPreview];
+            const thead = document.getElementById('excel-preview-thead');
+            const tbody = document.getElementById('excel-preview-tbody');
+            const title = document.getElementById('excel-preview-title');
+            const nav = document.getElementById('excel-preview-nav');
+            const count = document.getElementById('excel-preview-counter');
+            
+            title.innerHTML = `📊 Vista Previa del Excel — <b>Hoja: ${vista.nombre}</b>`;
+            if (esTodas && datosVistaPrevia.length > 1) {
+                nav.style.display = 'flex';
+                count.innerText = `Hoja ${indiceHojaPreview + 1} de ${datosVistaPrevia.length}`;
+            } else {
+                nav.style.display = 'none';
+            }
+
+            thead.innerHTML = "";
+            tbody.innerHTML = "";
+            if (!vista.filas || !vista.filas.length) return;
+
+            const f0 = vista.filas[0];
+            let trH = "<tr><th>#</th>";
+            f0.forEach((cell, i) => {
+                trH += `<th>Col ${i+1}: ${cell}</th>`;
+            });
+            trH += "</tr>";
+            thead.innerHTML = trH;
+
+            for (let r = 1; r < Math.min(10, vista.filas.length); r++) {
+                const fila = vista.filas[r];
+                let trB = `<tr><td><b>Fila ${r}</b></td>`;
+                f0.forEach((_, cIdx) => {
+                    trB += `<td>${fila[cIdx] || ""}</td>`;
+                });
+                trB += "</tr>";
+                tbody.innerHTML += trB;
+            }
+
+            document.getElementById('mapping-bar').style.display = 'block';
+        }
+
+        // ESCÁNER QUE BUSCA LA FILA REAL DE ENCABEZADOS Y MUESTRA TODAS LAS COLUMNAS
+        function poblarSelectoresMapeo(idxHoja) {
+            if (!datosVistaPrevia[idxHoja] || !datosVistaPrevia[idxHoja].filas.length) return;
+            const filas = datosVistaPrevia[idxHoja].filas;
+            
+            const palabrasClave = ["codigo", "código", "sku", "producto", "descripcion", "descripción", "precio", "marca", "categoria", "nombre", "stock", "modelo", "linea", "garantia", "pvp", "$"];
+            
+            let mejorFila = 0;
+            let maxCoincidencias = -1;
+            
+            for (let r = 0; r < Math.min(10, filas.length); r++) {
+                let coincidencias = 0;
+                let celdasLlenas = 0;
+                filas[r].forEach(celda => {
+                    const txt = String(celda || "").toLowerCase().trim();
+                    if (txt && txt !== "nan" && txt !== "undefined") {
+                        celdasLlenas++;
+                        if (palabrasClave.some(p => txt.includes(p))) {
+                            coincidencias += 3;
+                        }
+                    }
+                });
+                const puntuacion = coincidencias + (celdasLlenas * 0.5);
+                if (puntuacion > maxCoincidencias && celdasLlenas >= 2) {
+                    maxCoincidencias = puntuacion;
+                    mejorFila = r;
+                }
+            }
+
+            const fPpal = filas[mejorFila] || [];
+            const fSig = (mejorFila + 1 < filas.length) ? (filas[mejorFila + 1] || []) : [];
+            const totalCols = Math.max(fPpal.length, fSig.length);
+
+            const selects = ['map-tit', 'map-sku', 'map-mod', 'map-pre', 'map-stk'];
+            
+            selects.forEach(id => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                el.innerHTML = '<option value="">-- Automático --</option>';
+                for (let c = 0; c < totalCols; c++) {
+                    let nom1 = String(fPpal[c] || "").trim();
+                    let nom2 = String(fSig[c] || "").trim();
+                    if (nom1.toLowerCase() === "nan" || nom1.toLowerCase() === "undefined") nom1 = "";
+                    if (nom2.toLowerCase() === "nan" || nom2.toLowerCase() === "undefined") nom2 = "";
+
+                    let etiquetaCol = "";
+                    let valorCol = "";
+                    if (nom1 && nom2 && palabrasClave.some(p => nom2.toLowerCase().includes(p))) {
+                        valorCol = `${nom1} ${nom2}`;
+                        etiquetaCol = `Col ${c + 1}: ${nom1} ${nom2}`;
+                    } else if (nom1) {
+                        valorCol = nom1;
+                        etiquetaCol = `Col ${c + 1}: ${nom1}`;
+                    } else if (nom2) {
+                        valorCol = nom2;
+                        etiquetaCol = `Col ${c + 1}: ${nom2}`;
+                    } else {
+                        valorCol = `Col_${c + 1}`;
+                        etiquetaCol = `Col ${c + 1} (Sin nombre)`;
+                    }
+
+                    el.innerHTML += `<option value="${valorCol}">${etiquetaCol}</option>`;
+                }
+            });
         }
 
         async function verificarTokens() {
@@ -542,6 +725,11 @@ HTML_INTERFACE = """
                     const info = await res.json();
                     document.getElementById('spinner-percentage').innerText = info.porcentaje + "%";
                     document.getElementById('loader-mensaje').innerText = info.mensaje;
+
+                    if (!info.activo && info.porcentaje >= 100) {
+                        clearInterval(intervaloProgreso);
+                        setTimeout(() => { document.getElementById('loader-zona').style.display = 'none'; }, 800);
+                    }
                 } catch(e) {}
             }, 250);
         }
@@ -621,15 +809,67 @@ HTML_INTERFACE = """
             alert(`✅ Características aplicadas masivamente a ${count} artículos.`);
         }
 
-        function abrirModal(idx) {
-            const attr = atributosPorFila[idx];
+        async function abrirModal(idx) {
             document.getElementById('modal-idx').value = idx;
-            document.getElementById('m-mar').value = attr.marca || '';
-            document.getElementById('m-mod').value = attr.modelo || '';
-            document.getElementById('m-color').value = attr.color || '';
-            document.getElementById('m-compat').value = attr.compatibilidad || '';
-            document.getElementById('m-mat').value = attr.material || '';
             document.getElementById('modal-atributos').style.display = 'flex';
+            
+            const contenedor = document.getElementById('modal-attr-dinamicos');
+            contenedor.innerHTML = '<div style="text-align:center; padding:20px; color:#0284c7; font-weight:bold;">⏳ Consultado atributos en vivo para esta categoría en Mercado Libre...</div>';
+            
+            const catId = document.getElementById('cat-'+idx).value;
+            const attrBase = atributosPorFila[idx] || {};
+            const attrAdic = atributosAdicionalesPorFila[idx] || {};
+
+            try {
+                const res = await fetch(`/api/atributos-categoria/${catId}`);
+                const listaAttrML = await res.json();
+
+                contenedor.innerHTML = "";
+
+                contenedor.innerHTML += `
+                    <div class="modal-field">
+                        <label>Marca:</label>
+                        <input type="text" id="m-mar" value="${attrBase.marca || ''}">
+                    </div>
+                    <div class="modal-field">
+                        <label>Modelo:</label>
+                        <input type="text" id="m-mod" value="${attrBase.modelo || ''}">
+                    </div>
+                `;
+
+                listaAttrML.forEach(att => {
+                    const vGuardado = attrAdic[att.id] || "";
+                    let controlHTML = "";
+
+                    if (att.values && att.values.length > 0) {
+                        let optionsHTML = `<option value="">-- Elige una opción sugerida o escribe arriba --</option>`;
+                        att.values.forEach(valML => {
+                            const sel = (vGuardado.toLowerCase() === valML.name.toLowerCase()) ? "selected" : "";
+                            optionsHTML += `<option value="${valML.name}" ${sel}>${valML.name}</option>`;
+                        });
+
+                        controlHTML = `
+                            <div style="display:flex; gap:6px;">
+                                <select id="m-attr-${att.id}" onchange="document.getElementById('m-txt-${att.id}').value = this.value;" style="flex:1;">
+                                    ${optionsHTML}
+                                </select>
+                                <input type="text" id="m-txt-${att.id}" value="${vGuardado}" placeholder="O escribe aquí" style="flex:1;">
+                            </div>
+                        `;
+                    } else {
+                        controlHTML = `<input type="text" id="m-txt-${att.id}" value="${vGuardado}" placeholder="Ej: ${att.hint || 'Valor'}">`;
+                    }
+
+                    contenedor.innerHTML += `
+                        <div class="modal-field">
+                            <label>${att.name} <span style="font-weight:normal; color:#64748b; font-size:10px;">(${att.value_type})</span></label>
+                            ${controlHTML}
+                        </div>
+                    `;
+                });
+            } catch(e) {
+                contenedor.innerHTML = '<div style="color:red; padding:20px;">❌ Error conectando a los atributos oficiales de Mercado Libre.</div>';
+            }
         }
 
         function cerrarModal() {
@@ -638,29 +878,42 @@ HTML_INTERFACE = """
 
         function guardarAtributosModal() {
             const idx = document.getElementById('modal-idx').value;
+            
             atributosPorFila[idx].marca = document.getElementById('m-mar').value;
             atributosPorFila[idx].modelo = document.getElementById('m-mod').value;
-            atributosPorFila[idx].color = document.getElementById('m-color').value;
-            atributosPorFila[idx].compatibilidad = document.getElementById('m-compat').value;
-            atributosPorFila[idx].material = document.getElementById('m-mat').value;
             
             document.getElementById('mar-'+idx).value = atributosPorFila[idx].marca;
             document.getElementById('mod-'+idx).value = atributosPorFila[idx].modelo;
+
+            if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
+            
+            const contenedor = document.getElementById('modal-attr-dinamicos');
+            contenedor.querySelectorAll('input[id^="m-txt-"]').forEach(inp => {
+                const idAttrML = inp.id.replace('m-txt-', '');
+                if (inp.value.trim() !== "") {
+                    atributosAdicionalesPorFila[idx][idAttrML] = inp.value.trim();
+                } else {
+                    delete atributosAdicionalesPorFila[idx][idAttrML];
+                }
+            });
+
             actualizarResumenAtributos(idx);
             cerrarModal();
         }
 
         function actualizarResumenAtributos(idx) {
-            const attr = atributosPorFila[idx];
+            const attr = atributosPorFila[idx] || {};
+            const adic = atributosAdicionalesPorFila[idx] || {};
             let info = `🏷️ ${attr.marca || 'Generico'} / ${attr.modelo || 'Universal'}`;
-            if (attr.color) info += ` | 🎨 ${attr.color}`;
-            if (attr.compatibilidad) info += ` | 🔧 ${attr.compatibilidad}`;
+            const totalDinamicos = Object.keys(adic).length;
+            if (totalDinamicos > 0) {
+                info += ` | ⚡ +${totalDinamicos} características oficiales MLV`;
+            }
             document.getElementById('resumen-attr-'+idx).innerText = info;
         }
 
         function procesarArchivos(inputElement, idx) {
             const files = inputElement.files;
-            const previewArea = document.getElementById(`prev-${idx}`);
             if (!imagenesPorFila[idx]) imagenesPorFila[idx] = [];
 
             for (let file of files) {
@@ -670,13 +923,30 @@ HTML_INTERFACE = """
                 }
                 const reader = new FileReader();
                 reader.onload = (e) => {
-                    const base64Data = e.target.result;
-                    imagenesPorFila[idx].push(base64Data);
-                    const img = document.createElement('img');
-                    img.src = base64Data;
-                    previewArea.appendChild(img);
+                    imagenesPorFila[idx].push(e.target.result);
+                    renderizarGaleriaFila(idx);
                 };
                 reader.readAsDataURL(file);
+            }
+        }
+
+        function renderizarGaleriaFila(idx) {
+            const previewArea = document.getElementById(`prev-${idx}`);
+            previewArea.innerHTML = "";
+            (imagenesPorFila[idx] || []).forEach((b64, pos) => {
+                previewArea.innerHTML += `
+                    <div class="thumb-wrap">
+                        <img src="${b64}">
+                        <button class="del-photo-btn" onclick="eliminarFotoFila(${idx}, ${pos})" title="Eliminar foto">✕</button>
+                    </div>
+                `;
+            });
+        }
+
+        function eliminarFotoFila(idx, pos) {
+            if (imagenesPorFila[idx]) {
+                imagenesPorFila[idx].splice(pos, 1);
+                renderizarGaleriaFila(idx);
             }
         }
         
@@ -745,6 +1015,12 @@ HTML_INTERFACE = """
             formData.append('categoria_filtro', idCat);
             formData.append('filtrar_duplicados', document.getElementById('filtar-duplicados').checked);
 
+            formData.append('col_tit', document.getElementById('map-tit').value);
+            formData.append('col_sku', document.getElementById('map-sku').value);
+            formData.append('col_mod', document.getElementById('map-mod').value);
+            formData.append('col_pre', document.getElementById('map-pre').value);
+            formData.append('col_stk', document.getElementById('map-stk').value);
+
             document.getElementById('tabla-container').style.display = 'none';
             document.getElementById('loader-zona').style.display = 'block';
             document.getElementById('spinner-percentage').innerText = "0%";
@@ -766,27 +1042,24 @@ HTML_INTERFACE = """
 
                 resultado.productos.forEach((prod, idx) => {
                     imagenesPorFila[idx] = [];
-                    let imgHtmlPreview = "";
                     if (prod.ImagenLocal) {
                         imagenesPorFila[idx].push(prod.ImagenLocal);
-                        imgHtmlPreview = `<img src="${prod.ImagenLocal}" title="Foto local">`;
                     }
                     
                     atributosPorFila[idx] = {
                         marca: prod.Marca,
                         modelo: prod.Modelo,
-                        color: prod.Color,
-                        compatibilidad: prod.Compatibilidad,
-                        material: prod.Material
+                        color: "",
+                        compatibilidad: "",
+                        material: ""
                     };
+                    atributosAdicionalesPorFila[idx] = {};
 
                     let gtinDisplay = (prod.GTIN && prod.GTIN !== 'N/A' && prod.GTIN !== 'OMITIR') ? 'block' : 'none';
                     let selectCustom = (prod.GTIN && prod.GTIN !== 'N/A' && prod.GTIN !== 'OMITIR') ? 'selected' : '';
                     let selectOmit = (prod.GTIN && prod.GTIN !== 'N/A' && prod.GTIN !== 'OMITIR') ? '' : 'selected';
 
                     let resumenInit = `🏷️ ${prod.Marca} / ${prod.Modelo}`;
-                    if (prod.Color) resumenInit += ` | 🎨 ${prod.Color}`;
-                    if (prod.Compatibilidad) resumenInit += ` | 🔧 ${prod.Compatibilidad}`;
 
                     let badgesHTML = "";
                     for (const [nomCuenta, est] of Object.entries(prod.EstadoCuentas)) {
@@ -833,7 +1106,7 @@ HTML_INTERFACE = """
                                     <option value="OMITIR" ${selectOmit}>Este producto no posee código</option>
                                 </select>
                                 <input type="text" id="gtin-${idx}" value="${prod.GTIN !== 'N/A' ? prod.GTIN : ''}" style="display:${gtinDisplay}; margin-bottom:4px;">
-                                <button onclick="abrirModal(${idx})" style="background:#0284c7; width:100%; padding:4px; font-size:11px;">🛠️ Ver / Editar + Características</button>
+                                <button onclick="abrirModal(${idx})" style="background:#0284c7; width:100%; padding:4px; font-size:11px;">🛠️ Ver / Editar + Características Oficiales MLV</button>
                                 <div id="resumen-attr-${idx}" class="attr-summary">${resumenInit}</div>
                             </td>
                             <td>
@@ -841,10 +1114,12 @@ HTML_INTERFACE = """
                                     <span>📸 Clic o Arrastra fotos aquí</span>
                                     <input type="file" accept="image/jpeg, image/png, image/webp" multiple onchange="procesarArchivos(this, ${idx})">
                                 </div>
-                                <div id="prev-${idx}" class="preview-container">${imgHtmlPreview}</div>
+                                <div id="prev-${idx}" class="preview-container"></div>
                             </td>
                         </tr>
                     `;
+                    
+                    renderizarGaleriaFila(idx);
                 });
 
                 document.getElementById('tabla-container').style.display = 'block';
@@ -857,6 +1132,30 @@ HTML_INTERFACE = """
             }
         }
 
+        async function cargarGaleriaLocal() {
+            const cont = document.getElementById('galeria-contenedor');
+            cont.innerHTML = "<div style='color:#64748b;'>⏳ Leyendo archivos desde la carpeta lote_imagenes...</div>";
+            try {
+                const res = await fetch('/api/galeria-local');
+                const imgs = await res.json();
+                if (!imgs.length) {
+                    cont.innerHTML = "<div style='color:#64748b;'>No se encontraron imágenes JPG, PNG o WEBP en la carpeta <b>lote_imagenes</b>.</div>";
+                    return;
+                }
+                cont.innerHTML = "";
+                imgs.forEach(item => {
+                    cont.innerHTML += `
+                        <div class="gallery-item">
+                            <img src="${item.b64}">
+                            <span>${item.nombre}</span>
+                        </div>
+                    `;
+                });
+            } catch(e) {
+                cont.innerHTML = "<div style='color:red;'>❌ Error cargando galería local.</div>";
+            }
+        }
+
         function toggleAll(source) {
             document.querySelectorAll('.prod-check').forEach(cb => cb.checked = source.checked);
         }
@@ -866,6 +1165,7 @@ HTML_INTERFACE = """
             document.querySelectorAll('.prod-check:checked').forEach(cb => {
                 const idx = cb.dataset.idx;
                 const attr = atributosPorFila[idx];
+                const adic = atributosAdicionalesPorFila[idx] || {};
                 const razonGtin = document.getElementById('gtin-razon-'+idx).value;
                 let gtinFinal = (razonGtin === 'CUSTOM') ? document.getElementById('gtin-'+idx).value : 'OMITIR';
 
@@ -880,9 +1180,7 @@ HTML_INTERFACE = """
                     "Modelo": document.getElementById('mod-'+idx).value,
                     "SKU": document.getElementById('sku-'+idx).value,
                     "GTIN": gtinFinal,
-                    "Color": attr.color,
-                    "Compatibilidad": attr.compatibilidad,
-                    "Material": attr.material,
+                    "AtributosDinamicos": adic,
                     "DescripcionCustom": document.getElementById('desc-init-'+idx).value,
                     "ImagenesB64": imagenesPorFila[idx] || []
                 });
@@ -958,6 +1256,78 @@ async def obtener_hojas_excel(file: UploadFile = File(...)):
                 pass
     return {"hojas": hojas}
 
+@app.post("/api/columnas-excel")
+async def endpoint_columnas_excel(file: UploadFile = File(...), hoja: str = Form("TODAS")):
+    temp_filename = f"temp_cols_{file.filename}"
+    with open(temp_filename, "wb") as buffer:
+        buffer.write(await file.read())
+    
+    columnas = obtener_encabezados_excel(temp_filename, hoja_objetivo=hoja)
+    time.sleep(0.1)
+    if os.path.exists(temp_filename):
+        try: os.remove(temp_filename)
+        except PermissionError: pass
+    return columnas
+
+@app.post("/api/vista-previa-excel")
+async def endpoint_vista_previa_excel(file: UploadFile = File(...)):
+    temp_filename = f"temp_preview_{file.filename}"
+    with open(temp_filename, "wb") as buffer:
+        buffer.write(await file.read())
+    
+    vistas = obtener_vista_previa_excel(temp_filename)
+    time.sleep(0.1)
+    if os.path.exists(temp_filename):
+        try: os.remove(temp_filename)
+        except PermissionError: pass
+    return {"vistas": vistas}
+
+@app.get("/api/atributos-categoria/{cat_id}")
+def endpoint_atributos_categoria(cat_id: str):
+    try:
+        url = f"https://api.mercadolibre.com/categories/{cat_id}/attributes"
+        res = requests.get(url, timeout=6)
+        if res.status_code == 200:
+            attrs = res.json()
+            relevantes = []
+            PROHIBIDOS = {"BRAND", "MODEL", "SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES"}
+            for att in attrs:
+                aid = att.get("id")
+                if aid not in PROHIBIDOS and not att.get("read_only", False):
+                    relevantes.append({
+                        "id": aid,
+                        "name": att.get("name"),
+                        "value_type": att.get("value_type", "string"),
+                        "hint": att.get("hint", ""),
+                        "values": att.get("values", [])[:20]
+                    })
+            return relevantes
+    except Exception:
+        pass
+    return []
+
+@app.get("/api/galeria-local")
+def endpoint_galeria_local():
+    if not os.path.exists(CARPETA_LOTE_IMAGENES):
+        return []
+    
+    lista_fotos = []
+    for arc in sorted(os.listdir(CARPETA_LOTE_IMAGENES)):
+        ext = arc.rsplit(".", 1)[-1].lower()
+        if ext in ["jpg", "jpeg", "png", "webp"]:
+            ruta = os.path.join(CARPETA_LOTE_IMAGENES, arc)
+            try:
+                with open(ruta, "rb") as f:
+                    data = base64.b64encode(f.read()).decode("utf-8")
+                    mime = "image/jpeg" if ext in ["jpg", "jpeg"] else f"image/{ext}"
+                    lista_fotos.append({
+                        "nombre": arc,
+                        "b64": f"data:{mime};base64,{data}"
+                    })
+            except Exception:
+                continue
+    return lista_fotos
+
 @app.get("/verificar-tokens")
 def verificar_tokens_endpoint():
     archivos = listar_archivos_token()
@@ -997,7 +1367,12 @@ async def previsualizar_archivo(
     inicio: int = Form(1),
     fin: int = Form(100),
     categoria_filtro: str = Form("TODAS"),
-    filtrar_duplicados: str = Form("true")
+    filtrar_duplicados: str = Form("true"),
+    col_tit: str = Form(""),
+    col_sku: str = Form(""),
+    col_mod: str = Form(""),
+    col_pre: str = Form(""),
+    col_stk: str = Form("")
 ):
     actualizar_progreso(5, "Cargando archivo en memoria...")
     PROGRESO_ACTUAL["activo"] = True
@@ -1020,8 +1395,16 @@ async def previsualizar_archivo(
     token_ref = obtener_token(archivos_a_escanear[0])
     headers_ref = {"Authorization": f"Bearer {token_ref}", "Content-Type": "application/json"} if token_ref else {}
 
+    mapa_manual = {
+        "tit": col_tit if col_tit else None,
+        "sku": col_sku if col_sku else None,
+        "mod": col_mod if col_mod else None,
+        "pre": col_pre if col_pre else None,
+        "stk": col_stk if col_stk else None
+    }
+
     try:
-        filas_procesadas = procesar_excel_heuristico(temp_filename, hoja_objetivo=hoja)
+        filas_procesadas = procesar_excel_heuristico(temp_filename, hoja_objetivo=hoja, mapa_manual=mapa_manual)
     except Exception as e:
         PROGRESO_ACTUAL["activo"] = False
         return {"error": f"Error heurístico leyendo el archivo: {str(e)}"}
@@ -1131,7 +1514,6 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
 
             actualizar_progreso(porcentaje, f"[{nombre_perfil}] Publicando ({procesados}/{total_items}): {titulo_original[:25]}...")
 
-            # --- PLANTILLA DE DESCRIPCIÓN CON TÍTULO REPETIDO 3 VECES ---
             titulo_x3 = f"{titulo_original}\n{titulo_original}\n{titulo_original}\n"
             if prod.get('DescripcionCustom') and len(str(prod['DescripcionCustom']).strip()) > 5:
                 cuerpo_desc = f"{prod['DescripcionCustom']}\n"
@@ -1139,13 +1521,13 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
             else:
                 descripcion_estructurada = f"{BLOQUE_SUPERIOR}\n\n{titulo_x3}\n{BLOQUE_INFERIOR}"
 
-            # PAYLOAD BLINDADO CON "plain_text" y "text" PARA COMPATIBILIDAD CON ML
             payload_desc = {
                 "plain_text": descripcion_estructurada,
                 "text": descripcion_estructurada
             }
 
-            atributos_payload = construir_atributos_dinamicos(prod, headers)
+            attr_adicionales = prod.get('AtributosDinamicos', {})
+            atributos_payload = construir_atributos_dinamicos_dict(prod, attr_adicionales, headers)
 
             modo_envio = prod.get('Envio', 'not_specified')
             if modo_envio == "me2_free" or "free" in str(modo_envio).lower() or "gratis" in str(modo_envio).lower():
@@ -1186,11 +1568,9 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                 item_id = item_data.get('id')
                 permalink = item_data.get('permalink')
                 
-                # Pequeña pausa de seguridad antes de cargar descripción
                 await asyncio.sleep(0.5)
                 res_desc = requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json=payload_desc, timeout=10)
                 if res_desc.status_code not in [200, 201]:
-                    # Respaldo por PUT si POST no fue aceptado
                     requests.put(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json=payload_desc, timeout=10)
 
                 requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=10)
