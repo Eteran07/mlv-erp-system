@@ -250,8 +250,14 @@ HTML_INTERFACE = """
         .log-box { background: #0f172a; color: #4ade80; padding: 15px; height: 250px; overflow-y: auto; font-family: monospace; border-radius: 5px; margin-top: 20px; white-space: pre-wrap; font-size: 12px;}
         
         .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.65); z-index: 2000; justify-content: center; align-items: center; }
-        .modal-box { background: white; padding: 28px; border-radius: 12px; width: 680px; max-width: 95%; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
-        .modal-box h3 { margin-top: 0; color: #0f172a; border-bottom: 2px solid #0284c7; padding-bottom: 10px; }
+        .modal-box { background: white; padding: 30px; border-radius: 12px; width: 600px; max-width: 95%; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
+        .modal-box h3 { margin-top: 0; color: #0f172a; border-bottom: 2px solid #0284c7; padding-bottom: 10px; font-size: 18px; }
+        
+        .modal-grid { display: flex; flex-direction: column; gap: 12px; margin-top: 15px; }
+        .modal-field { display: flex; flex-direction: column; gap: 4px; }
+        .modal-field label { font-size: 12px; font-weight: bold; color: #334155; }
+        .modal-field input { width: 100%; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; background: #fff; }
+
         .category-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-height: 380px; overflow-y: auto; margin: 15px 0; padding-right: 5px; }
         .category-item { border: 1px solid #cbd5e1; padding: 12px; border-radius: 6px; cursor: pointer; transition: 0.2s; font-size: 13px; font-weight: bold; color: #334155; display: flex; align-items: center; gap: 8px; }
         .category-item:hover { background: #f0f9ff; border-color: #0284c7; color: #0284c7; }
@@ -424,12 +430,12 @@ HTML_INTERFACE = """
     <div id="modal-bulk-atributos" class="modal-overlay">
         <div class="modal-box">
             <h3 style="color:#7e22ce;">⚡ Llenado Masivo de Características</h3>
-            <p style="font-size:12px; color:#64748b;">Los atributos que llenes aquí se aplicarán instantáneamente a <b>todos los artículos marcados con check</b> en la tabla.</p>
+            <p style="font-size:12px; color:#64748b;">Los atributos que llenes aquí se aplicarán a todos los artículos marcados con check.</p>
             <div class="modal-grid">
-                <div><label>Marca:</label><input type="text" id="bm-mar" placeholder="Ej: MAXIPRINT"></div>
-                <div><label>Color:</label><input type="text" id="bm-color" placeholder="Ej: Negro / Cian"></div>
-                <div><label>Compatibilidad:</label><input type="text" id="bm-compat" placeholder="Ej: Canon G1100"></div>
-                <div><label>Material:</label><input type="text" id="bm-mat" placeholder="Ej: Original"></div>
+                <div class="modal-field"><label>Marca (Común para el lote):</label><input type="text" id="bm-mar" placeholder="Ej: MAXIPRINT"></div>
+                <div class="modal-field"><label>Color (Común para el lote):</label><input type="text" id="bm-color" placeholder="Ej: Negro / Cian"></div>
+                <div class="modal-field"><label>Compatibilidad / Rendimiento:</label><input type="text" id="bm-compat" placeholder="Ej: Canon G1100"></div>
+                <div class="modal-field"><label>Material / Especificación:</label><input type="text" id="bm-mat" placeholder="Ej: Original"></div>
             </div>
             <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
                 <button onclick="cerrarModalMasivo()" style="background:#64748b;">Cancelar</button>
@@ -444,11 +450,11 @@ HTML_INTERFACE = """
             <h3>🛠️ Editar Características del Producto</h3>
             <input type="hidden" id="modal-idx">
             <div class="modal-grid">
-                <div><label>Marca:</label><input type="text" id="m-mar"></div>
-                <div><label>Modelo:</label><input type="text" id="m-mod"></div>
-                <div><label>Color:</label><input type="text" id="m-color"></div>
-                <div><label>Compatibilidad / Rendimiento:</label><input type="text" id="m-compat"></div>
-                <div style="grid-column: span 2;"><label>Material / Especificación:</label><input type="text" id="m-mat"></div>
+                <div class="modal-field"><label>Marca:</label><input type="text" id="m-mar"></div>
+                <div class="modal-field"><label>Modelo:</label><input type="text" id="m-mod"></div>
+                <div class="modal-field"><label>Color:</label><input type="text" id="m-color"></div>
+                <div class="modal-field"><label>Compatibilidad / Rendimiento:</label><input type="text" id="m-compat"></div>
+                <div class="modal-field"><label>Material / Especificación Adicional:</label><input type="text" id="m-mat"></div>
             </div>
             <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
                 <button onclick="cerrarModal()" style="background:#64748b;">Cancelar</button>
@@ -808,10 +814,10 @@ HTML_INTERFACE = """
                                     <option value="gold_pro">Premium</option>
                                 </select>
                                 <select id="envio-${idx}" class="select-envio attr-select" style="font-size:11px; font-weight:bold;">
-                                    <option value="me2_free">🟢 Envío Gratis</option>
+                                    <option value="me2_free">🟢 Mercado Envíos - Envío Gratis</option>
                                     <option value="custom_free">🟢 Envío Gratis Nacional (Custom)</option>
-                                    <option value="me2_buyer">🔵 Cobro en Destino</option>
-                                    <option value="not_specified">⚪ Acordar con Vendedor</option>
+                                    <option value="me2_buyer">🔵 Mercado Envíos - Cobro en Destino</option>
+                                    <option value="not_specified">⚪ Acordar con el Vendedor</option>
                                 </select>
                             </td>
                             <td>
@@ -974,7 +980,7 @@ def verificar_tokens_endpoint():
                 else:
                     logs.append(f"❌ [{nombre}] No se pudo renovar -> {estado}")
         except Exception as e:
-            logs.append(f"❌ [{nombre}] Error leyendo archivo de token: {e}")
+            logs.append(f"❌ [{nombre}] Error leyendo token: {e}")
     return {"logs": logs}
 
 @app.get("/", response_class=HTMLResponse)
@@ -1140,15 +1146,16 @@ FICHA TÉCNICA DEL PRODUCTO:
             descripcion_estructurada = f"{BLOQUE_SUPERIOR}\n{titulo_x3}\n{bloque_ficha}\n{cuerpo_desc}\n{BLOQUE_INFERIOR}"
             atributos_payload = construir_atributos_dinamicos(prod, headers)
 
+            # --- BLINDAJE DE ENVÍO CORREGIDO Y BLINDADO ---
             modo_envio = prod.get('Envio', 'not_specified')
-            if modo_envio == "me2_free":
+            if modo_envio == "me2_free" or "free" in str(modo_envio).lower() or "gratis" in str(modo_envio).lower():
                 shipping_payload = {"mode": "me2", "local_pick_up": True, "free_shipping": True}
             elif modo_envio == "custom_free":
                 shipping_payload = {"mode": "custom", "free_shipping": True, "costs": [{"description": "Envío Gratis a Nivel Nacional", "cost": 0}]}
             elif modo_envio == "me2_buyer":
                 shipping_payload = {"mode": "me2", "local_pick_up": True, "free_shipping": False}
             else:
-                shipping_payload = {"mode": "not_specified", "local_pick_up": True}
+                shipping_payload = {"mode": "me2", "local_pick_up": True, "free_shipping": True}
 
             datos_publicacion = {
                 "title": titulo_original,
@@ -1179,6 +1186,8 @@ FICHA TÉCNICA DEL PRODUCTO:
                 item_id = item_data.get('id')
                 permalink = item_data.get('permalink')
                 requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json={"text": descripcion_estructurada}, timeout=10)
+                
+                # Doble blindaje PUT para forzar el envío gratis
                 requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=10)
                 logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO! -> {permalink}")
             else:
@@ -1193,6 +1202,8 @@ FICHA TÉCNICA DEL PRODUCTO:
                         permalink = item_data.get('permalink')
                         requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json={"title": titulo_original}, timeout=10)
                         requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json={"text": descripcion_estructurada}, timeout=10)
+                        
+                        # Doble blindaje PUT en bypass
                         requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=10)
                         logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO (Bypass Catálogo)! -> {permalink}")
                     else:
