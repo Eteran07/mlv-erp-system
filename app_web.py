@@ -10,7 +10,6 @@ import asyncio
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
-from google import genai
 
 from token_manager import (
     listar_archivos_token, obtener_nombre_cuenta,
@@ -28,12 +27,6 @@ app = FastAPI(title="ERP Mercado Libre - Dashboard Definitivo")
 CARPETA_LOTE_IMAGENES = "lote_imagenes"
 os.makedirs(CARPETA_LOTE_IMAGENES, exist_ok=True)
 
-try:
-    cliente_ia = genai.Client()
-    USAR_IA = True
-except Exception:
-    USAR_IA = False
-
 PROGRESO_ACTUAL = {
     "porcentaje": 0,
     "mensaje": "Iniciando...",
@@ -41,31 +34,36 @@ PROGRESO_ACTUAL = {
 }
 
 CACHE_ATRIBUTOS_CAT = {}
-BLOQUE_SUPERIOR = "SOMOS TIENDA FÍSICA, Empresa Mayorista Líder en el Mercado de la Computación Producto 100% de calidad\n"
+
+# --- PLANTILLA OFICIAL EXACTA DEL DOCUMENTO ---
+BLOQUE_SUPERIOR = "SOMOS TIENDA FÍSICA, Empresa Mayorista Líder en el Mercado de la Computación Producto 100% de calidad"
+
 BLOQUE_INFERIOR = """
 .Por Favor Verifique la disponibilidad antes de ofertar
+Por Favor Verifique la disponibilidad antes de ofertar
+Por Favor Verifique la disponibilidad antes de ofertar
 **************************************************************************************************
 - Emitimos factura LEGAL
+- Trabajamos con agentes de retención
 - Enviamos a todo el País.
 **************************************************************************************************
+COMENTARIOS:
+- Realice todas las preguntas necesariasAntes de ofertar.
+- El equipo de ventas de está a tu disposición para responder tus consultas.
+- Te invitamos a que solo ofertes cuando estés seguro de realizar la compra.
+- La disponibilidad y precio del producto publicado solo se garantiza por un lapso de 24hrs luego de haber solicitado la compra.
+- Si presentas algún inconveniente durante el proceso de compras estaremos a tu completa disposición para atenderte y solventar la situación. Deseamos que tu compra con nosotros siempre genere una calificación positiva.
+****************************************************************************************************
+HORARIO DE TRABAJO
+****************************************************
+De Lunes A Viernes
+De 8:30am A 5:30pm
 """
 
 def actualizar_progreso(porcentaje: int, mensaje: str):
     PROGRESO_ACTUAL["porcentaje"] = porcentaje
     PROGRESO_ACTUAL["mensaje"] = mensaje
     PROGRESO_ACTUAL["activo"] = True
-
-def redactar_parrafo_base(titulo):
-    if not USAR_IA: 
-        return f"Producto original y garantizado de alto rendimiento para {titulo}. Fabricado bajo estrictos estándares de calidad."
-    try:
-        respuesta = cliente_ia.models.generate_content(
-            model='gemini-2.0-flash', 
-            contents=f"Escribe un párrafo técnico, persuasivo y sin saludos de máximo 3 líneas sobre el producto: '{titulo}'."
-        )
-        return respuesta.text.strip()
-    except Exception:
-        return f"Producto original y garantizado de alto rendimiento para {titulo}. Fabricado bajo estrictos estándares de calidad."
 
 def emparejar_imagen_local(modelo, sku, titulo):
     if not os.path.exists(CARPETA_LOTE_IMAGENES):
@@ -268,6 +266,7 @@ HTML_INTERFACE = """
         .preview-container { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; justify-content: center; }
         .preview-container img { width: 42px; height: 42px; object-fit: cover; border-radius: 4px; border: 1px solid #ccc; }
         .attr-summary { font-size: 11px; color: #334155; background: #f1f5f9; padding: 5px; border-radius: 4px; margin-top: 5px; border-left: 3px solid #0284c7; }
+        .desc-tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; background: #e0e7ff; color: #0891b2; margin-top: 4px; }
     </style>
 </head>
 <body>
@@ -293,7 +292,7 @@ HTML_INTERFACE = """
         <div id="tab-maestro" class="section-view active">
             <div class="container">
                 <h1>📦 Panel Maestro de Sincronización y Publicación</h1>
-                <div class="subtitle">Selector Oficial de Categorías MLV, Detección de Hojas y Edición Masiva Completa</div>
+                <div class="subtitle">Selector Oficial de Categorías MLV, Detección de Hojas y Plantilla de Descripción Oficial</div>
                 
                 <div class="panel-control">
                     <div class="control-group">
@@ -516,14 +515,20 @@ HTML_INTERFACE = """
         }
 
         async function verificarTokens() {
-            const consola = document.getElementById('log-tokens');
-            consola.innerText = "⏳ Probando conexión y vigencia de tokens en vivo con Mercado Libre...";
+            const consolaMain = document.getElementById('resultados');
+            const consolaTokens = document.getElementById('log-tokens');
+            if (consolaMain) consolaMain.innerText = "⏳ Probando conexión y vigencia de tokens en vivo con Mercado Libre...";
+            if (consolaTokens) consolaTokens.innerText = "⏳ Probando conexión y vigencia de tokens en vivo con Mercado Libre...";
             try {
                 const res = await fetch('/verificar-tokens');
                 const data = await res.json();
-                consola.innerText = data.logs.join('\\n');
+                const textoLog = data.logs.join('\\n');
+                if (consolaMain) consolaMain.innerText = textoLog;
+                if (consolaTokens) consolaTokens.innerText = textoLog;
             } catch(e) {
-                consola.innerText = "❌ Error al verificar tokens: " + e;
+                const errorMsg = "❌ Error al verificar tokens: " + e;
+                if (consolaMain) consolaMain.innerText = errorMsg;
+                if (consolaTokens) consolaTokens.innerText = errorMsg;
             }
         }
 
@@ -537,11 +542,6 @@ HTML_INTERFACE = """
                     const info = await res.json();
                     document.getElementById('spinner-percentage').innerText = info.porcentaje + "%";
                     document.getElementById('loader-mensaje').innerText = info.mensaje;
-
-                    if (!info.activo && info.porcentaje >= 100) {
-                        clearInterval(intervaloProgreso);
-                        setTimeout(() => { document.getElementById('loader-zona').style.display = 'none'; }, 800);
-                    }
                 } catch(e) {}
             }, 250);
         }
@@ -572,6 +572,7 @@ HTML_INTERFACE = """
 
                     if (descripcionesCSV[skuVal] || descripcionesCSV[titVal]) {
                         matchCount++;
+                        document.getElementById('desc-tag-'+idx).innerText = "📄 Desc. CSV Asignada";
                     }
                 });
 
@@ -800,6 +801,7 @@ HTML_INTERFACE = """
                             <td>
                                 <input type="text" id="tit-${idx}" value="${prod.Titulo}" maxlength="60" style="margin-bottom:4px; font-weight:bold;">
                                 <div class="cat-tag" title="ID: ${prod.Categoria_ID}">📌 ML: ${prod.CategoriaNombre}</div>
+                                <div id="desc-tag-${idx}" class="desc-tag">📋 Plantilla Oficial (Título x3)</div>
                                 <div style="font-size:11px; color:#64748b; margin-top:2px;">📁 Hoja: <b>${prod.Hoja}</b> (${prod.CategoriaOrigen})</div>
                                 <div style="margin-top:6px;">${badgesHTML}</div>
                                 <input type="hidden" id="cat-${idx}" value="${prod.Categoria_ID}">
@@ -814,10 +816,10 @@ HTML_INTERFACE = """
                                     <option value="gold_pro">Premium</option>
                                 </select>
                                 <select id="envio-${idx}" class="select-envio attr-select" style="font-size:11px; font-weight:bold;">
-                                    <option value="me2_free">🟢 Mercado Envíos - Envío Gratis</option>
+                                    <option value="me2_free">🟢 Envío Gratis</option>
                                     <option value="custom_free">🟢 Envío Gratis Nacional (Custom)</option>
-                                    <option value="me2_buyer">🔵 Mercado Envíos - Cobro en Destino</option>
-                                    <option value="not_specified">⚪ Acordar con el Vendedor</option>
+                                    <option value="me2_buyer">🔵 Cobro en Destino</option>
+                                    <option value="not_specified">⚪ Acordar con Vendedor</option>
                                 </select>
                             </td>
                             <td>
@@ -1059,7 +1061,7 @@ async def previsualizar_archivo(
                 continue
 
         sku = item["SKU"]
-        modelo = sku
+        modelo = item["Modelo"]
         precio = item["Precio"]
         stock = item["Stock"]
         marca = item["Marca"]
@@ -1129,24 +1131,22 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
 
             actualizar_progreso(porcentaje, f"[{nombre_perfil}] Publicando ({procesados}/{total_items}): {titulo_original[:25]}...")
 
+            # --- PLANTILLA DE DESCRIPCIÓN CON TÍTULO REPETIDO 3 VECES ---
             titulo_x3 = f"{titulo_original}\n{titulo_original}\n{titulo_original}\n"
-            cuerpo_desc = prod['DescripcionCustom'] if prod.get('DescripcionCustom') else redactar_parrafo_base(titulo_original)
-            
-            bloque_ficha = f"""
-==================================================================
-FICHA TÉCNICA DEL PRODUCTO:
-- MARCA: {prod['Marca']}
-- MODELO: {prod['Modelo']}
-- NRO. DE PARTE / SKU: {prod.get('SKU', 'N/A')}
-- COLOR / ESPECIFICACIÓN: {prod.get('Color', 'N/A')}
-- COMPATIBILIDAD / LÍNEA: {prod.get('Compatibilidad', 'N/A')}
-- MATERIAL / TIPO: {prod.get('Material', 'N/A')}
-==================================================================
-"""
-            descripcion_estructurada = f"{BLOQUE_SUPERIOR}\n{titulo_x3}\n{bloque_ficha}\n{cuerpo_desc}\n{BLOQUE_INFERIOR}"
+            if prod.get('DescripcionCustom') and len(str(prod['DescripcionCustom']).strip()) > 5:
+                cuerpo_desc = f"{prod['DescripcionCustom']}\n"
+                descripcion_estructurada = f"{BLOQUE_SUPERIOR}\n\n{titulo_x3}\n{cuerpo_desc}\n{BLOQUE_INFERIOR}"
+            else:
+                descripcion_estructurada = f"{BLOQUE_SUPERIOR}\n\n{titulo_x3}\n{BLOQUE_INFERIOR}"
+
+            # PAYLOAD BLINDADO CON "plain_text" y "text" PARA COMPATIBILIDAD CON ML
+            payload_desc = {
+                "plain_text": descripcion_estructurada,
+                "text": descripcion_estructurada
+            }
+
             atributos_payload = construir_atributos_dinamicos(prod, headers)
 
-            # --- BLINDAJE DE ENVÍO CORREGIDO Y BLINDADO ---
             modo_envio = prod.get('Envio', 'not_specified')
             if modo_envio == "me2_free" or "free" in str(modo_envio).lower() or "gratis" in str(modo_envio).lower():
                 shipping_payload = {"mode": "me2", "local_pick_up": True, "free_shipping": True}
@@ -1185,9 +1185,14 @@ FICHA TÉCNICA DEL PRODUCTO:
                 item_data = respuesta.json()
                 item_id = item_data.get('id')
                 permalink = item_data.get('permalink')
-                requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json={"text": descripcion_estructurada}, timeout=10)
                 
-                # Doble blindaje PUT para forzar el envío gratis
+                # Pequeña pausa de seguridad antes de cargar descripción
+                await asyncio.sleep(0.5)
+                res_desc = requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json=payload_desc, timeout=10)
+                if res_desc.status_code not in [200, 201]:
+                    # Respaldo por PUT si POST no fue aceptado
+                    requests.put(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json=payload_desc, timeout=10)
+
                 requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=10)
                 logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO! -> {permalink}")
             else:
@@ -1200,10 +1205,13 @@ FICHA TÉCNICA DEL PRODUCTO:
                         item_data = res_bypass.json()
                         item_id = item_data.get('id')
                         permalink = item_data.get('permalink')
-                        requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json={"title": titulo_original}, timeout=10)
-                        requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json={"text": descripcion_estructurada}, timeout=10)
                         
-                        # Doble blindaje PUT en bypass
+                        await asyncio.sleep(0.5)
+                        res_desc = requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json=payload_desc, timeout=10)
+                        if res_desc.status_code not in [200, 201]:
+                            requests.put(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json=payload_desc, timeout=10)
+
+                        requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json={"title": titulo_original}, timeout=10)
                         requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=10)
                         logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO (Bypass Catálogo)! -> {permalink}")
                     else:
