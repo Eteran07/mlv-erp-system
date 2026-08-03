@@ -17,7 +17,7 @@ def renovar_y_guardar_token(archivo_token, datos_json):
     refresh_token = datos_json.get("refresh_token")
 
     if not client_id or not client_secret:
-        return datos_json.get("access_token"), "ERROR_ENV: Faltan ML_APP_ID o ML_CLIENT_SECRET en el .env"
+        return datos_json.get("access_token"), "ERROR_ENV: Faltan credenciales en el .env"
     if not refresh_token:
         return datos_json.get("access_token"), "ERROR_JSON: El archivo JSON no tiene el campo 'refresh_token'."
 
@@ -44,12 +44,14 @@ def renovar_y_guardar_token(archivo_token, datos_json):
 
 def obtener_token(archivo_token):
     try:
+        if not os.path.exists(archivo_token):
+            return None
         with open(archivo_token, "r") as archivo:
             datos = json.load(archivo)
 
         token = datos.get("access_token")
         headers = {"Authorization": f"Bearer {token}"}
-        res_check = requests.get("https://api.mercadolibre.com/users/me", headers=headers, timeout=5)
+        res_check = requests.get("https://api.mercadolibre.com/users/me", headers=headers)
 
         if res_check.status_code != 200:
             nuevo_token, _ = renovar_y_guardar_token(archivo_token, datos)
@@ -62,21 +64,20 @@ def obtener_token(archivo_token):
 
 def obtener_titulos_publicados(headers):
     try:
-        res_me = requests.get("https://api.mercadolibre.com/users/me", headers=headers, timeout=6)
+        res_me = requests.get("https://api.mercadolibre.com/users/me", headers=headers)
         if res_me.status_code != 200: return set()
         user_id = res_me.json().get("id")
 
-        res_items = requests.get(f"https://api.mercadolibre.com/users/{user_id}/items/search", headers=headers, timeout=6)
+        res_items = requests.get(f"https://api.mercadolibre.com/users/{user_id}/items/search", headers=headers)
         item_ids = res_items.json().get("results", [])
         
         titulos_activos = set()
         if item_ids:
             ids_str = ",".join(item_ids[:50]) 
-            res_detalles = requests.get(f"https://api.mercadolibre.com/items?ids={ids_str}", headers=headers, timeout=6)
+            res_detalles = requests.get(f"https://api.mercadolibre.com/items?ids={ids_str}", headers=headers)
             for item in res_detalles.json():
                 if item.get("code") == 200:
                     titulos_activos.add(item["body"]["title"].strip().lower())
         return titulos_activos
-    except Exception as e:
-        print(f"Error en obtener_titulos_publicados: {e}")
+    except Exception:
         return set()
