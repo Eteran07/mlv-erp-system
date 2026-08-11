@@ -27,6 +27,20 @@ app = FastAPI(title="ERP Mercado Libre - Dashboard Definitivo")
 CARPETA_LOTE_IMAGENES = "lote_imagenes"
 os.makedirs(CARPETA_LOTE_IMAGENES, exist_ok=True)
 
+try:
+    from google import genai
+    USAR_IA = True
+except Exception:
+    USAR_IA = False
+
+def obtener_cliente_ia():
+    if not USAR_IA:
+        return None
+    try:
+        return genai.Client()
+    except Exception:
+        return None
+
 PROGRESO_ACTUAL = {
     "porcentaje": 0,
     "mensaje": "Iniciando...",
@@ -111,6 +125,8 @@ def emparejar_imagen_local(modelo, sku, titulo):
 
 def subir_foto_a_ml(base64_data, token):
     try:
+        if not base64_data or not isinstance(base64_data, str) or not base64_data.startswith("data:image/"):
+            return None
         header, encoded = base64_data.split(",", 1)
         file_ext = header.split(";")[0].split("/")[1]
         image_bytes = base64.b64decode(encoded)
@@ -119,12 +135,23 @@ def subir_foto_a_ml(base64_data, token):
         headers = {"Authorization": f"Bearer {token}"}
         files = {"file": (f"foto.{file_ext}", image_bytes, f"image/{file_ext}")}
         
-        res = requests.post(url, headers=headers, files=files, timeout=10)
+        res = requests.post(url, headers=headers, files=files, timeout=12)
         if res.status_code == 201:
             return res.json().get("id") 
     except Exception as e:
         print(f"Error procesando imagen base64: {e}")
     return None
+
+def analizar_error_ml(respuesta):
+    try:
+        error_data = respuesta.json()
+        causas = error_data.get('cause', [])
+        if isinstance(causas, list) and len(causas) > 0:
+            msg_list = [c.get('message', str(c)) if isinstance(c, dict) else str(c) for c in causas]
+            return " | ".join(msg_list)
+        return str(error_data.get('message', error_data.get('error', 'Error desconocido de Mercado Libre')))
+    except Exception:
+        return f"Error HTTP {respuesta.status_code}: {respuesta.text[:150]}"
 
 def construir_atributos_dinamicos_dict(prod, attr_adicionales, headers):
     lista = [
@@ -146,8 +173,9 @@ def construir_atributos_dinamicos_dict(prod, attr_adicionales, headers):
     PROHIBIDOS = {"BRAND", "MODEL", "SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES"}
     if attr_adicionales and isinstance(attr_adicionales, dict):
         for k_id, v_val in attr_adicionales.items():
-            if k_id not in PROHIBIDOS and str(v_val).strip() != "":
-                lista.append({"id": k_id, "value_name": str(v_val).strip()})
+            k_id_upper = str(k_id).strip().upper()
+            if k_id_upper not in PROHIBIDOS and str(v_val).strip() != "":
+                lista.append({"id": k_id_upper, "value_name": str(v_val).strip()})
 
     return lista
 
@@ -494,7 +522,7 @@ HTML_INTERFACE = """
         </div>
     </div>
 
-    <!-- MODAL INDIVIDUAL DINÁMICO (CON LISTAS SUGERIDAS DE MLV) -->
+    <!-- MODAL INDIVIDUAL DINÁMICO (CON LISTAS SUGERIDAS DE MLV Y AUTOLLENADO IA) -->
     <div id="modal-atributos" class="modal-overlay">
         <div class="modal-box">
             <h3>🛠️ Editar Características Oficiales de Mercado Libre</h3>
@@ -543,7 +571,6 @@ HTML_INTERFACE = """
             }
         };
 
-        // DETECCIÓN DE HOJAS, COLUMNAS Y VISTA PREVIA VISUAL INTELIGENTE
         async function detectarHojasYVistaPrevia(inputElement) {
             const file = inputElement.files[0];
             const selectHoja = document.getElementById('hoja-select');
@@ -631,7 +658,6 @@ HTML_INTERFACE = """
             document.getElementById('mapping-bar').style.display = 'block';
         }
 
-        // ESCÁNER QUE BUSCA LA FILA REAL DE ENCABEZADOS Y MUESTRA TODAS LAS COLUMNAS
         function poblarSelectoresMapeo(idxHoja) {
             if (!datosVistaPrevia[idxHoja] || !datosVistaPrevia[idxHoja].filas.length) return;
             const filas = datosVistaPrevia[idxHoja].filas;
@@ -797,9 +823,18 @@ HTML_INTERFACE = """
                     atributosPorFila[idx].marca = marVal;
                     document.getElementById('mar-'+idx).value = marVal;
                 }
-                if (colorVal) atributosPorFila[idx].color = colorVal;
-                if (compatVal) atributosPorFila[idx].compatibilidad = compatVal;
-                if (matVal) atributosPorFila[idx].material = matVal;
+                if (colorVal) {
+                    if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
+                    atributosAdicionalesPorFila[idx]["COLOR"] = colorVal;
+                }
+                if (compatVal) {
+                    if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
+                    atributosAdicionalesPorFila[idx]["COMPATIBLE_MODELS"] = compatVal;
+                }
+                if (matVal) {
+                    if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
+                    atributosAdicionalesPorFila[idx]["MATERIAL"] = matVal;
+                }
 
                 actualizarResumenAtributos(idx);
                 count++;
@@ -807,6 +842,20 @@ HTML_INTERFACE = """
 
             cerrarModalMasivo();
             alert(`✅ Características aplicadas masivamente a ${count} artículos.`);
+        }
+
+        function obtenerValorGuardado(att, attrAdic, attrBase) {
+            if (attrAdic[att.id] !== undefined) return attrAdic[att.id];
+            for (const [k, val] of Object.entries(attrAdic)) {
+                if (String(k).toUpperCase() === String(att.id).toUpperCase()) return val;
+                if (String(k).toLowerCase() === String(att.name).toLowerCase()) return val;
+            }
+            const idNorm = String(att.id).toUpperCase();
+            const nomNorm = String(att.name).toLowerCase();
+            if ((idNorm === "COLOR" || nomNorm.includes("color")) && attrBase.color) return attrBase.color;
+            if ((idNorm === "COMPATIBLE_MODELS" || idNorm === "LINE" || nomNorm.includes("compatib")) && attrBase.compatibilidad) return attrBase.compatibilidad;
+            if ((idNorm === "MATERIAL" || nomNorm.includes("material")) && attrBase.material) return attrBase.material;
+            return "";
         }
 
         async function abrirModal(idx) {
@@ -824,9 +873,13 @@ HTML_INTERFACE = """
                 const res = await fetch(`/api/atributos-categoria/${catId}`);
                 const listaAttrML = await res.json();
 
-                contenedor.innerHTML = "";
-
-                contenedor.innerHTML += `
+                contenedor.innerHTML = `
+                    <div style="margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; background: #e0f2fe; padding: 12px; border-radius: 8px; border: 1px solid #7dd3fc;">
+                        <span style="font-size: 13px; font-weight: 800; color: #0369a1;">🤖 Relleno Inteligente de Ficha Técnica</span>
+                        <button type="button" onclick="ejecutarAutollenadoIA(${idx})" style="background: #0284c7; font-size: 11px; padding: 6px 14px;">
+                            ⚡ Autollenar con IA (Gemini)
+                        </button>
+                    </div>
                     <div class="modal-field">
                         <label>Marca:</label>
                         <input type="text" id="m-mar" value="${attrBase.marca || ''}">
@@ -838,23 +891,20 @@ HTML_INTERFACE = """
                 `;
 
                 listaAttrML.forEach(att => {
-                    const vGuardado = attrAdic[att.id] || "";
+                    const vGuardado = obtenerValorGuardado(att, attrAdic, attrBase);
                     let controlHTML = "";
 
                     if (att.values && att.values.length > 0) {
-                        let optionsHTML = `<option value="">-- Elige una opción sugerida o escribe arriba --</option>`;
+                        let optionsHTML = "";
                         att.values.forEach(valML => {
-                            const sel = (vGuardado.toLowerCase() === valML.name.toLowerCase()) ? "selected" : "";
-                            optionsHTML += `<option value="${valML.name}" ${sel}>${valML.name}</option>`;
+                            optionsHTML += `<option value="${valML.name}">`;
                         });
 
                         controlHTML = `
-                            <div style="display:flex; gap:6px;">
-                                <select id="m-attr-${att.id}" onchange="document.getElementById('m-txt-${att.id}').value = this.value;" style="flex:1;">
-                                    ${optionsHTML}
-                                </select>
-                                <input type="text" id="m-txt-${att.id}" value="${vGuardado}" placeholder="O escribe aquí" style="flex:1;">
-                            </div>
+                            <input type="text" list="dl-${att.id}" id="m-txt-${att.id}" value="${vGuardado}" placeholder="Elige de la lista o escribe una opción libre...">
+                            <datalist id="dl-${att.id}">
+                                ${optionsHTML}
+                            </datalist>
                         `;
                     } else {
                         controlHTML = `<input type="text" id="m-txt-${att.id}" value="${vGuardado}" placeholder="Ej: ${att.hint || 'Valor'}">`;
@@ -869,6 +919,46 @@ HTML_INTERFACE = """
                 });
             } catch(e) {
                 contenedor.innerHTML = '<div style="color:red; padding:20px;">❌ Error conectando a los atributos oficiales de Mercado Libre.</div>';
+            }
+        }
+
+        async function ejecutarAutollenadoIA(idx) {
+            const titVal = document.getElementById('tit-'+idx).value;
+            const catId = document.getElementById('cat-'+idx).value;
+
+            const formData = new FormData();
+            formData.append('titulo', titVal);
+            formData.append('cat_id', catId);
+
+            const btn = event.target;
+            const textOrig = btn.innerText;
+            btn.innerText = "⏳ Analizando...";
+            btn.disabled = true;
+
+            try {
+                const res = await fetch('/api/autollenar-atributos-ia', { method: 'POST', body: formData });
+                const data = await res.json();
+
+                if (data.atributos) {
+                    if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
+                    
+                    for (const [idAttr, valIA] of Object.entries(data.atributos)) {
+                        const idUpper = String(idAttr).trim ? String(idAttr).trim().toUpperCase() : String(idAttr).toUpperCase();
+                        atributosAdicionalesPorFila[idx][idUpper] = valIA;
+                        
+                        const inputCampo = document.getElementById(`m-txt-${idUpper}`);
+                        if (inputCampo) {
+                            inputCampo.value = valIA;
+                            inputCampo.style.backgroundColor = "#dcfce7";
+                        }
+                    }
+                    actualizarResumenAtributos(idx);
+                }
+            } catch(e) {
+                alert("No se pudieron autollenar algunos atributos.");
+            } finally {
+                btn.innerText = textOrig;
+                btn.disabled = false;
             }
         }
 
@@ -889,7 +979,7 @@ HTML_INTERFACE = """
             
             const contenedor = document.getElementById('modal-attr-dinamicos');
             contenedor.querySelectorAll('input[id^="m-txt-"]').forEach(inp => {
-                const idAttrML = inp.id.replace('m-txt-', '');
+                const idAttrML = inp.id.replace('m-txt-', '').toUpperCase();
                 if (inp.value.trim() !== "") {
                     atributosAdicionalesPorFila[idx][idAttrML] = inp.value.trim();
                 } else {
@@ -923,8 +1013,10 @@ HTML_INTERFACE = """
                 }
                 const reader = new FileReader();
                 reader.onload = (e) => {
-                    imagenesPorFila[idx].push(e.target.result);
-                    renderizarGaleriaFila(idx);
+                    if (e.target.result && typeof e.target.result === 'string' && e.target.result.startsWith('data:image/')) {
+                        imagenesPorFila[idx].push(e.target.result);
+                        renderizarGaleriaFila(idx);
+                    }
                 };
                 reader.readAsDataURL(file);
             }
@@ -933,7 +1025,8 @@ HTML_INTERFACE = """
         function renderizarGaleriaFila(idx) {
             const previewArea = document.getElementById(`prev-${idx}`);
             previewArea.innerHTML = "";
-            (imagenesPorFila[idx] || []).forEach((b64, pos) => {
+            imagenesPorFila[idx] = (imagenesPorFila[idx] || []).filter(img => img && typeof img === 'string' && img.startsWith('data:image/'));
+            imagenesPorFila[idx].forEach((b64, pos) => {
                 previewArea.innerHTML += `
                     <div class="thumb-wrap">
                         <img src="${b64}">
@@ -950,9 +1043,19 @@ HTML_INTERFACE = """
             }
         }
         
+        function applyingExpo() {
+            const expoVal = document.getElementById('bulk-exposicion').value;
+            document.querySelectorAll('.select-exposicion').forEach(sel => sel.value = expoVal);
+        }
+
         function aplicarExposicionMasiva() {
             const expoVal = document.getElementById('bulk-exposicion').value;
             document.querySelectorAll('.select-exposicion').forEach(sel => sel.value = expoVal);
+        }
+
+        function applyingEnv() {
+            const envioVal = document.getElementById('bulk-envio').value;
+            document.querySelectorAll('.select-envio').forEach(sel => sel.value = envioVal);
         }
 
         function aplicarEnvioMasivo() {
@@ -1042,7 +1145,7 @@ HTML_INTERFACE = """
 
                 resultado.productos.forEach((prod, idx) => {
                     imagenesPorFila[idx] = [];
-                    if (prod.ImagenLocal) {
+                    if (prod.ImagenLocal && typeof prod.ImagenLocal === 'string' && prod.ImagenLocal.startsWith('data:image/')) {
                         imagenesPorFila[idx].push(prod.ImagenLocal);
                     }
                     
@@ -1328,6 +1431,69 @@ def endpoint_galeria_local():
                 continue
     return lista_fotos
 
+@app.post("/api/autollenar-atributos-ia")
+async def autollenar_atributos_ia(
+    titulo: str = Form(...),
+    cat_id: str = Form(...)
+):
+    cliente_ia = obtener_cliente_ia()
+    if not cliente_ia:
+        return {"error": "La API de Gemini no está configurada en el servidor."}
+    try:
+        url_attr = f"https://api.mercadolibre.com/categories/{cat_id}/attributes"
+        res = requests.get(url_attr, timeout=6)
+        if res.status_code != 200:
+            return {"error": "No se pudieron obtener los atributos de Mercado Libre."}
+        
+        attrs_ml = res.json()
+        PROHIBIDOS = {"BRAND", "MODEL", "SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES"}
+        relevantes = [
+            {"id": a.get("id"), "name": a.get("name"), "hint": a.get("hint", "")}
+            for a in attrs_ml 
+            if a.get("id") not in PROHIBIDOS and not a.get("read_only", False)
+        ][:15]
+        
+        if not relevantes:
+            return {"atributos": {}}
+
+        lista_nombres = [f"{a['id']} ({a['name']})" for a in relevantes]
+        prompt = f"""
+        Dado el siguiente título de un producto en venta:
+        "{titulo}"
+
+        Extrae o deduce los valores técnicos para las siguientes características exigidas por Mercado Libre:
+        {', '.join(lista_nombres)}
+        
+        Reglas:
+        - Responde ÚNICAMENTE un objeto JSON donde las CLAVES sean estrictamente el ID del atributo (ejemplo: "COLOR", "VOLTAGE", "RAM_MEMORY") y el VALOR sea el texto deducido.
+        - Si un atributo no se puede deducir con certeza del título, NO lo inventes y pon "".
+        - Ejemplo de salida: {{"COLOR": "Negro", "VOLTAGE": "110V/220V"}}
+        """
+
+        respuesta = cliente_ia.models.generate_content(
+            model='gemini-2.0-flash', 
+            contents=prompt
+        )
+        txt_resp = respuesta.text.strip()
+        if txt_resp.startswith("```json"):
+            txt_resp = txt_resp.replace("```json", "").replace("```", "").strip()
+        elif txt_resp.startswith("```"):
+            txt_resp = txt_resp.replace("```", "").strip()
+
+        datos_ia = json.loads(txt_resp)
+        
+        ids_oficiales = {a["id"] for a in relevantes}
+        atributos_finales = {}
+        for k, v in datos_ia.items():
+            k_upper = str(k).strip().upper()
+            if k_upper in ids_oficiales and v and str(v).strip() != "":
+                atributos_finales[k_upper] = str(v).strip()
+
+        return {"atributos": atributos_finales}
+    except Exception as e:
+        print(f"Error en autollenado IA: {e}")
+        return {"error": f"Fallo al procesar con IA: {str(e)}"}
+
 @app.get("/verificar-tokens")
 def verificar_tokens_endpoint():
     archivos = listar_archivos_token()
@@ -1339,7 +1505,11 @@ def verificar_tokens_endpoint():
                 datos = json.load(f)
             token = datos.get("access_token")
             headers = {"Authorization": f"Bearer {token}"}
-            res = requests.get("https://api.mercadolibre.com/users/me", headers=headers)
+            
+            # URL limpia de texto plano:
+            url_me = "https://api.mercadolibre.com/users/me"
+            res = requests.get(url_me, headers=headers)
+            
             if res.status_code == 200:
                 user_info = res.json()
                 nick = user_info.get("nickname", "Desconocido")
@@ -1500,7 +1670,11 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
             continue
 
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        titulos_existentes_cuenta = obtener_titulos_publicados(headers)
+        titulos_existentes_cuenta = set()
+        try:
+            titulos_existentes_cuenta = obtener_titulos_publicados(headers)
+        except Exception:
+            pass
 
         for prod in productos:
             await asyncio.sleep(0.01)
@@ -1561,49 +1735,62 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
             if fotos_payload:
                 datos_publicacion["pictures"] = fotos_payload
 
-            respuesta = requests.post("https://api.mercadolibre.com/items", headers=headers, json=datos_publicacion, timeout=12)
-            
-            if respuesta.status_code == 201:
-                item_data = respuesta.json()
-                item_id = item_data.get('id')
-                permalink = item_data.get('permalink')
+            try:
+                respuesta = requests.post("https://api.mercadolibre.com/items", headers=headers, json=datos_publicacion, timeout=12)
                 
-                await asyncio.sleep(0.5)
-                res_desc = requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json=payload_desc, timeout=10)
-                if res_desc.status_code not in [200, 201]:
-                    requests.put(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json=payload_desc, timeout=10)
-
-                requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=10)
-                logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO! -> {permalink}")
-            else:
-                error_texto = respuesta.text
-                if "restrictions_coliving" in error_texto:
-                    titulo_mascarado = re.sub(r'(?i)\b(canon|hp|epson|brother|samsung|apple|sony)\b', 'Compatible', titulo_original)
-                    datos_publicacion["title"] = titulo_mascarado
-                    res_bypass = requests.post("https://api.mercadolibre.com/items", headers=headers, json=datos_publicacion, timeout=12)
-                    if res_bypass.status_code == 201:
-                        item_data = res_bypass.json()
-                        item_id = item_data.get('id')
-                        permalink = item_data.get('permalink')
-                        
-                        await asyncio.sleep(0.5)
-                        res_desc = requests.post(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json=payload_desc, timeout=10)
+                if respuesta.status_code == 201:
+                    item_data = respuesta.json()
+                    item_id = item_data.get('id')
+                    permalink = item_data.get('permalink')
+                    
+                    await asyncio.sleep(0.5)
+                    try:
+                        url_desc = f"https://api.mercadolibre.com/items/{item_id}/description"
+                        res_desc = requests.post(url_desc, headers=headers, json=payload_desc, timeout=10)
                         if res_desc.status_code not in [200, 201]:
-                            requests.put(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, json=payload_desc, timeout=10)
+                            requests.put(url_desc, headers=headers, json=payload_desc, timeout=10)
+                    except Exception as e_desc:
+                        print(f"Aviso - Descripción no subida a {item_id}: {e_desc}")
 
-                        requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json={"title": titulo_original}, timeout=10)
-                        requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=10)
-                        logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO (Bypass Catálogo)! -> {permalink}")
-                    else:
-                        error_data = res_bypass.json()
-                        causas = error_data.get('cause', [])
-                        detalles = " | ".join([c.get('message', str(c)) if isinstance(c, dict) else str(c) for c in causas]) if (isinstance(causas, list) and len(causas) > 0) else str(error_data.get('message', 'Error ML'))
-                        logs_totales.append(f"❌ [{nombre_perfil}] Error '{titulo_original[:15]}...': {detalles}")
+                    try:
+                        url_put = f"https://api.mercadolibre.com/items/{item_id}"
+                        requests.put(url_put, headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=10)
+                    except Exception:
+                        pass
+                        
+                    logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO! -> {permalink}")
                 else:
-                    error_data = respuesta.json()
-                    causas = error_data.get('cause', [])
-                    detalles = " | ".join([c.get('message', str(c)) if isinstance(c, dict) else str(c) for c in causas]) if (isinstance(causas, list) and len(causas) > 0) else str(error_data.get('message', 'Error ML'))
-                    logs_totales.append(f"❌ [{nombre_perfil}] Error '{titulo_original[:15]}...': {detalles}")
+                    error_texto = respuesta.text
+                    if "restrictions_coliving" in error_texto:
+                        titulo_mascarado = re.sub(r'(?i)\b(canon|hp|epson|brother|samsung|apple|sony)\b', 'Compatible', titulo_original)
+                        datos_publicacion["title"] = titulo_mascarado
+                        res_bypass = requests.post("https://api.mercadolibre.com/items", headers=headers, json=datos_publicacion, timeout=12)
+                        if res_bypass.status_code == 201:
+                            item_data = res_bypass.json()
+                            item_id = item_data.get('id')
+                            permalink = item_data.get('permalink')
+                            
+                            await asyncio.sleep(0.5)
+                            try:
+                                url_desc = f"https://api.mercadolibre.com/items/{item_id}/description"
+                                res_desc = requests.post(url_desc, headers=headers, json=payload_desc, timeout=10)
+                                if res_desc.status_code not in [200, 201]:
+                                    requests.put(url_desc, headers=headers, json=payload_desc, timeout=10)
+                            except Exception:
+                                pass
+
+                            url_put = f"https://api.mercadolibre.com/items/{item_id}"
+                            requests.put(url_put, headers=headers, json={"title": titulo_original}, timeout=10)
+                            requests.put(url_put, headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=10)
+                            logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO (Bypass Catálogo)! -> {permalink}")
+                        else:
+                            detalles = analizar_error_ml(res_bypass)
+                            logs_totales.append(f"❌ [{nombre_perfil}] Error '{titulo_original[:15]}...': {detalles}")
+                    else:
+                        detalles = analizar_error_ml(respuesta)
+                        logs_totales.append(f"❌ [{nombre_perfil}] Error '{titulo_original[:15]}...': {detalles}")
+            except Exception as e_req:
+                logs_totales.append(f"❌ [{nombre_perfil}] Excepción de red/servidor enviando '{titulo_original[:15]}...': {str(e_req)}")
 
     actualizar_progreso(100, "¡Lote Completado!")
     PROGRESO_ACTUAL["activo"] = False
