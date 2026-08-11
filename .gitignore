@@ -13,3 +13,8 @@ inventario.xlsx
 token_*.json
 tokens_*.json
 *.env
+
+# PyInstaller
+dist/
+build/
+*.spec
