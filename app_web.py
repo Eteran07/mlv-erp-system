@@ -26,6 +26,14 @@ from excel_parser import procesar_excel_heuristico, obtener_encabezados_excel, o
 load_dotenv()
 app = FastAPI(title="ERP Mercado Libre - Dashboard Definitivo")
 
+# =================================================================
+# BLINDAJE ANTI-PORTAPAPELES (EVITA ENLACES ROTOS MARKDOWN)
+# =================================================================
+DOM_ML = "mercado" + "libre.com"
+API_ML = f"https://api.{DOM_ML}"
+DOM_WA = "wa" + ".me"
+API_WA = f"https://{DOM_WA}"
+
 CARPETA_LOTE_IMAGENES = "lote_imagenes"
 os.makedirs(CARPETA_LOTE_IMAGENES, exist_ok=True)
 
@@ -105,7 +113,7 @@ def emparejar_imagen_local(modelo, sku, titulo):
                             mime = "image/jpeg" if ext in [".JPG", ".JPEG"] else f"image/{ext[1:].lower()}"
                             return f"data:{mime};base64,{data}"
                     except Exception as e:
-                        print(f"Error cargando foto exacta {arc}: {e}")
+                        print(f"Error cargando foto local exacta {arc}: {e}")
 
     def limpiar_texto(t):
         return re.sub(r'[\s\-_\.]+', '', str(t)).lower()
@@ -125,7 +133,7 @@ def emparejar_imagen_local(modelo, sku, titulo):
                     mime = "image/jpeg" if ext in ["jpg", "jpeg"] else f"image/{ext}"
                     return f"data:{mime};base64,{data}"
             except Exception as e:
-                print(f"Error cargando foto flexible {arc}: {e}")
+                print(f"Error cargando foto local flexible {arc}: {e}")
     return None
 
 def subir_foto_a_ml(base64_data, token):
@@ -136,7 +144,7 @@ def subir_foto_a_ml(base64_data, token):
         file_ext = header.split(";")[0].split("/")[1]
         image_bytes = base64.b64decode(encoded)
 
-        url = "https://api.mercadolibre.com/pictures"
+        url = f"{API_ML}/pictures"
         headers = {"Authorization": f"Bearer {token}"}
         files = {"file": (f"foto.{file_ext}", image_bytes, f"image/{file_ext}")}
         
@@ -185,12 +193,12 @@ def construir_atributos_dinamicos_dict(prod, attr_adicionales, headers):
 def obtener_diccionario_publicados_ml(headers):
     """Obtiene un diccionario {titulo_minuscula: permalink_url} de la cuenta."""
     try:
-        url_me = "https://" + "api.mercadolibre.com/users/me"
+        url_me = f"{API_ML}/users/me"
         res_me = requests.get(url_me, headers=headers)
         if res_me.status_code != 200: return {}
         user_id = res_me.json().get("id")
 
-        url_search = "https://" + f"api.mercadolibre.com/users/{user_id}/items/search"
+        url_search = f"{API_ML}/users/{user_id}/items/search"
         res_items = requests.get(url_search, headers=headers)
         item_ids = res_items.json().get("results", [])
         
@@ -198,7 +206,7 @@ def obtener_diccionario_publicados_ml(headers):
         if item_ids:
             for i in range(0, len(item_ids), 50):
                 ids_str = ",".join(item_ids[i:i+50]) 
-                url_items = "https://" + f"api.mercadolibre.com/items?ids={ids_str}"
+                url_items = f"{API_ML}/items?ids={ids_str}"
                 res_detalles = requests.get(url_items, headers=headers)
                 for item in res_detalles.json():
                     if item.get("code") == 200:
@@ -283,7 +291,8 @@ HTML_INTERFACE = """
         table.data-table th, table.data-table td { padding: 12px 10px; vertical-align: top; border-bottom: 1px solid #e2e8f0; }
         table.data-table th { background: #0f172a; color: white; font-weight: 700; text-align: left; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
         table.data-table tbody tr:nth-child(even) { background: #f8fafc; }
-        table.data-table tbody tr:hover { background: #f1f5f9; }
+        table.data-table tbody tr.cat-header:hover { background: #cbd5e1; }
+        table.data-table tbody tr.item-row:hover { background: #f1f5f9; }
         
         .account-badge { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; margin-top: 6px; margin-right: 4px; }
         .badge-libre { background: #dcfce7; color: #15803d; border: 1px solid #86efac; }
@@ -463,7 +472,7 @@ HTML_INTERFACE = """
                                 <th style="width: 8%;">Precio $</th>
                                 <th style="width: 6%;">Stock</th>
                                 <th style="width: 16%;">Exposición & Envío</th>
-                                <th style="width: 26%;">Ficha Técnica (Marca / Modelo / SKU / GTIN)</th>
+                                <th style="width: 26%;">Ficha Técnica Condensada</th>
                                 <th style="width: 20%;">Gestor de Fotos Local</th>
                             </tr>
                         </thead>
@@ -567,7 +576,6 @@ HTML_INTERFACE = """
                     </div>
                 </div>
 
-                <!-- MAPEO MANUAL CATALOGO -->
                 <div id="cat-mapping-bar" class="mapping-bar">
                     <h4 style="margin: 0 0 5px 0; color: #0369a1; font-size: 15px; font-weight: 800;">🎯 Validar Columnas del Catálogo:</h4>
                     <span style="font-size: 13px; color: #0284c7; font-weight: 600;">Asegúrate de que el sistema identifique correctamente el título, SKU y precio para el catálogo.</span>
@@ -655,10 +663,11 @@ HTML_INTERFACE = """
         </div>
     </div>
 
-    <!-- MODAL INDIVIDUAL DINÁMICO (CON LISTAS SUGERIDAS DE MLV Y AUTOLLENADO IA) -->
+    <!-- MODAL INDIVIDUAL DINÁMICO CONDENSADO -->
     <div id="modal-atributos" class="modal-overlay">
         <div class="modal-box">
-            <h3>🛠️ Editar Características Oficiales de Mercado Libre</h3>
+            <h3 style="margin-bottom: 5px;">🛠️ Ficha Técnica (Vista Condensada)</h3>
+            <p style="font-size:12px; color:#64748b; margin-top:0; margin-bottom:15px;">Solo te mostramos las características que Mercado Libre exige (*). Las demás están ocultas para agilizar tu trabajo.</p>
             <input type="hidden" id="modal-idx">
             <div id="modal-attr-dinamicos" class="modal-grid">
                 <div style="text-align:center; padding:20px; color:#64748b;">⏳ Cargando ficha técnica de Mercado Libre...</div>
@@ -735,6 +744,7 @@ HTML_INTERFACE = """
                 datosVistaPrevia.forEach(item => {
                     selectHoja.innerHTML += `<option value="${item.nombre}">📄 ${item.nombre}</option>`;
                 });
+                
                 cambiarHojaSeleccionada();
             } catch(e) {
                 selectHoja.innerHTML = '<option value="TODAS">📚 Todo el Libro (Todas las Hojas)</option>';
@@ -784,44 +794,57 @@ HTML_INTERFACE = """
 
             const f0 = vista.filas[0];
             let trH = "<tr><th>#</th>";
-            f0.forEach((cell, i) => { trH += `<th>Col ${i+1}: ${cell}</th>`; });
+            f0.forEach((cell, i) => {
+                trH += `<th>Col ${i+1}: ${cell}</th>`;
+            });
             trH += "</tr>";
             thead.innerHTML = trH;
 
             for (let r = 1; r < Math.min(10, vista.filas.length); r++) {
                 const fila = vista.filas[r];
                 let trB = `<tr><td><b>Fila ${r}</b></td>`;
-                f0.forEach((_, cIdx) => { trB += `<td>${fila[cIdx] || ""}</td>`; });
+                f0.forEach((_, cIdx) => {
+                    trB += `<td>${fila[cIdx] || ""}</td>`;
+                });
                 trB += "</tr>";
                 tbody.innerHTML += trB;
             }
+
             document.getElementById('mapping-bar').style.display = 'block';
         }
 
         function poblarSelectoresMapeo(idxHoja) {
             if (!datosVistaPrevia[idxHoja] || !datosVistaPrevia[idxHoja].filas.length) return;
             const filas = datosVistaPrevia[idxHoja].filas;
+            
             const palabrasClave = ["codigo", "código", "sku", "producto", "descripcion", "descripción", "precio", "marca", "categoria", "nombre", "stock", "modelo", "linea", "garantia", "pvp", "$"];
-            let mejorFila = 0, maxCoincidencias = -1;
+            
+            let mejorFila = 0;
+            let maxCoincidencias = -1;
             
             for (let r = 0; r < Math.min(10, filas.length); r++) {
-                let coincidencias = 0, celdasLlenas = 0;
+                let coincidencias = 0;
+                let celdasLlenas = 0;
                 filas[r].forEach(celda => {
                     const txt = String(celda || "").toLowerCase().trim();
                     if (txt && txt !== "nan" && txt !== "undefined") {
                         celdasLlenas++;
-                        if (palabrasClave.some(p => txt.includes(p))) coincidencias += 3;
+                        if (palabrasClave.some(p => txt.includes(p))) {
+                            coincidencias += 3;
+                        }
                     }
                 });
                 const puntuacion = coincidencias + (celdasLlenas * 0.5);
                 if (puntuacion > maxCoincidencias && celdasLlenas >= 2) {
-                    maxCoincidencias = puntuacion; mejorFila = r;
+                    maxCoincidencias = puntuacion;
+                    mejorFila = r;
                 }
             }
 
             const fPpal = filas[mejorFila] || [];
             const fSig = (mejorFila + 1 < filas.length) ? (filas[mejorFila + 1] || []) : [];
             const totalCols = Math.max(fPpal.length, fSig.length);
+
             const selects = ['map-tit', 'map-sku', 'map-mod', 'map-pre', 'map-stk'];
             
             selects.forEach(id => {
@@ -834,23 +857,693 @@ HTML_INTERFACE = """
                     if (nom1.toLowerCase() === "nan" || nom1.toLowerCase() === "undefined") nom1 = "";
                     if (nom2.toLowerCase() === "nan" || nom2.toLowerCase() === "undefined") nom2 = "";
 
-                    let etiquetaCol = "", valorCol = "";
+                    let etiquetaCol = "";
+                    let valorCol = "";
                     if (nom1 && nom2 && palabrasClave.some(p => nom2.toLowerCase().includes(p))) {
-                        valorCol = `${nom1} ${nom2}`; etiquetaCol = `Col ${c + 1}: ${nom1} ${nom2}`;
+                        valorCol = `${nom1} ${nom2}`;
+                        etiquetaCol = `Col ${c + 1}: ${nom1} ${nom2}`;
                     } else if (nom1) {
-                        valorCol = nom1; etiquetaCol = `Col ${c + 1}: ${nom1}`;
+                        valorCol = nom1;
+                        etiquetaCol = `Col ${c + 1}: ${nom1}`;
                     } else if (nom2) {
-                        valorCol = nom2; etiquetaCol = `Col ${c + 1}: ${nom2}`;
+                        valorCol = nom2;
+                        etiquetaCol = `Col ${c + 1}: ${nom2}`;
                     } else {
-                        valorCol = `Col_${c + 1}`; etiquetaCol = `Col ${c + 1} (Sin nombre)`;
+                        valorCol = `Col_${c + 1}`;
+                        etiquetaCol = `Col ${c + 1} (Sin nombre)`;
                     }
+
                     el.innerHTML += `<option value="${valorCol}">${etiquetaCol}</option>`;
                 }
             });
         }
 
         // ==========================================
-        // FUNCIONES CATÁLOGO (NUEVO)
+        // AGRUPADOR EN ACORDEON DE CATEGORIAS
+        // ==========================================
+        function toggleCatGrupo(clase) {
+            document.querySelectorAll('.' + clase).forEach(el => {
+                el.style.display = (el.style.display === 'none') ? 'table-row' : 'none';
+            });
+        }
+
+        async function verificarTokens() {
+            const consolaMain = document.getElementById('resultados');
+            const consolaTokens = document.getElementById('log-tokens');
+            if (consolaMain) consolaMain.innerText = "⏳ Probando conexión y vigencia de tokens en vivo con Mercado Libre...";
+            if (consolaTokens) consolaTokens.innerText = "⏳ Probando conexión y vigencia de tokens en vivo con Mercado Libre...";
+            try {
+                const res = await fetch('/verificar-tokens');
+                const data = await res.json();
+                const textoLog = data.logs.join('\\n');
+                if (consolaMain) consolaMain.innerText = textoLog;
+                if (consolaTokens) consolaTokens.innerText = textoLog;
+            } catch(e) {
+                const errorMsg = "❌ Error al verificar tokens: " + e;
+                if (consolaMain) consolaMain.innerText = errorMsg;
+                if (consolaTokens) consolaTokens.innerText = errorMsg;
+            }
+        }
+
+        function iniciarMonitoreoProgreso() {
+            document.getElementById('loader-zona').style.display = 'block';
+            if (intervaloProgreso) clearInterval(intervaloProgreso);
+            
+            intervaloProgreso = setInterval(async () => {
+                try {
+                    const res = await fetch('/estado-progreso');
+                    const info = await res.json();
+                    document.getElementById('spinner-percentage').innerText = info.porcentaje + "%";
+                    document.getElementById('loader-mensaje').innerText = info.mensaje;
+
+                    if (!info.activo && info.porcentaje >= 100) {
+                        clearInterval(intervaloProgreso);
+                        setTimeout(() => { document.getElementById('loader-zona').style.display = 'none'; }, 800);
+                    }
+                } catch(e) {}
+            }, 250);
+        }
+
+        function cargarDescripcionesCSV(input) {
+            const file = input.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const text = e.target.result;
+                const lineas = text.split('\\n');
+                let matchCount = 0;
+
+                for (let i = 1; i < lineas.length; i++) {
+                    const l = lineas[i].split(',');
+                    if (l.length >= 2) {
+                        const clave = l[0].trim().toLowerCase();
+                        const desc = l.slice(1).join(',').replace(/["']/g, '').trim();
+                        if (clave && desc) descripcionesCSV[clave] = desc;
+                    }
+                }
+
+                document.querySelectorAll('.prod-check').forEach(cb => {
+                    const idx = cb.dataset.idx;
+                    const skuVal = (document.getElementById('sku-'+idx).value || '').toLowerCase();
+                    const titVal = (document.getElementById('tit-'+idx).value || '').toLowerCase();
+
+                    if (descripcionesCSV[skuVal] || descripcionesCSV[titVal]) {
+                        matchCount++;
+                        document.getElementById('desc-tag-'+idx).innerText = "📄 Desc. CSV Asignada";
+                    }
+                });
+
+                document.getElementById('csv-status').innerText = `✅ Se asignaron descripciones personalizadas a ${matchCount} artículos en memoria.`;
+                alert(`✅ Archivo CSV procesado con éxito.`);
+            };
+            reader.readAsText(file);
+        }
+
+        function toggleGtin(idx) {
+            const selectVal = document.getElementById('gtin-razon-'+idx).value;
+            const inputField = document.getElementById('gtin-'+idx);
+            inputField.style.display = (selectVal === 'CUSTOM') ? 'block' : 'none';
+        }
+
+        function abrirModalMasivo() {
+            document.getElementById('modal-bulk-atributos').style.display = 'flex';
+        }
+
+        function cerrarModalMasivo() {
+            document.getElementById('modal-bulk-atributos').style.display = 'none';
+        }
+
+        function aplicarAtributosMasivos() {
+            const marVal = document.getElementById('bm-mar').value.trim();
+            const colorVal = document.getElementById('bm-color').value.trim();
+            const compatVal = document.getElementById('bm-compat').value.trim();
+            const matVal = document.getElementById('bm-mat').value.trim();
+            let count = 0;
+
+            document.querySelectorAll('.prod-check:checked').forEach(cb => {
+                const idx = cb.dataset.idx;
+                if (marVal) {
+                    atributosPorFila[idx].marca = marVal;
+                    document.getElementById('mar-'+idx).value = marVal;
+                }
+                if (colorVal) {
+                    if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
+                    atributosAdicionalesPorFila[idx]["COLOR"] = colorVal;
+                }
+                if (compatVal) {
+                    if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
+                    atributosAdicionalesPorFila[idx]["COMPATIBLE_MODELS"] = compatVal;
+                }
+                if (matVal) {
+                    if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
+                    atributosAdicionalesPorFila[idx]["MATERIAL"] = matVal;
+                }
+
+                actualizarResumenAtributos(idx);
+                count++;
+            });
+
+            cerrarModalMasivo();
+            alert(`✅ Características aplicadas masivamente a ${count} artículos.`);
+        }
+
+        function obtenerValorGuardado(att, attrAdic, attrBase) {
+            if (attrAdic[att.id] !== undefined) return attrAdic[att.id];
+            for (const [k, val] of Object.entries(attrAdic)) {
+                if (String(k).toUpperCase() === String(att.id).toUpperCase()) return val;
+                if (String(k).toLowerCase() === String(att.name).toLowerCase()) return val;
+            }
+            const idNorm = String(att.id).toUpperCase();
+            const nomNorm = String(att.name).toLowerCase();
+            if ((idNorm === "COLOR" || nomNorm.includes("color")) && attrBase.color) return attrBase.color;
+            if ((idNorm === "COMPATIBLE_MODELS" || idNorm === "LINE" || nomNorm.includes("compatib")) && attrBase.compatibilidad) return attrBase.compatibilidad;
+            if ((idNorm === "MATERIAL" || nomNorm.includes("material")) && attrBase.material) return attrBase.material;
+            return "";
+        }
+
+        // ==========================================
+        // MODAL DE CARACTERISTICAS CONDENSADO
+        // ==========================================
+        async function abrirModal(idx) {
+            document.getElementById('modal-idx').value = idx;
+            document.getElementById('modal-atributos').style.display = 'flex';
+            
+            const contenedor = document.getElementById('modal-attr-dinamicos');
+            contenedor.innerHTML = '<div style="text-align:center; padding:20px; color:#0284c7; font-weight:bold;">⏳ Consultado atributos requeridos en Mercado Libre...</div>';
+            
+            const catId = document.getElementById('cat-'+idx).value;
+            const attrBase = atributosPorFila[idx] || {};
+            const attrAdic = atributosAdicionalesPorFila[idx] || {};
+
+            try {
+                const res = await fetch(`/api/atributos-categoria/${catId}`);
+                const listaAttrML = await res.json();
+
+                let htmlContent = `
+                    <div style="margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; background: #e0f2fe; padding: 12px; border-radius: 8px; border: 1px solid #7dd3fc;">
+                        <span style="font-size: 13px; font-weight: 800; color: #0369a1;">🤖 Relleno Inteligente de Ficha Técnica</span>
+                        <button type="button" onclick="ejecutarAutollenadoIA(${idx})" style="background: #0284c7; font-size: 11px; padding: 6px 14px; color:white; border:none; border-radius:6px; cursor:pointer;">
+                            ⚡ Autollenar con IA
+                        </button>
+                    </div>
+                    <div class="modal-field">
+                        <label>Marca: <span style="color:#ef4444; font-weight:bold;" title="Obligatorio">*</span></label>
+                        <input type="text" id="m-mar" value="${attrBase.marca || ''}">
+                    </div>
+                    <div class="modal-field">
+                        <label>Modelo: <span style="color:#ef4444; font-weight:bold;" title="Obligatorio">*</span></label>
+                        <input type="text" id="m-mod" value="${attrBase.modelo || ''}">
+                    </div>
+                `;
+
+                let htmlReq = "";
+                let htmlOpt = "";
+                let countOpt = 0;
+
+                listaAttrML.forEach(att => {
+                    const vGuardado = obtenerValorGuardado(att, attrAdic, attrBase);
+                    let controlHTML = "";
+
+                    if (att.values && att.values.length > 0) {
+                        let optionsHTML = "";
+                        att.values.forEach(valML => {
+                            optionsHTML += `<option value="${valML.name}">`;
+                        });
+
+                        controlHTML = `
+                            <input type="text" list="dl-${att.id}" id="m-txt-${att.id}" value="${vGuardado}" placeholder="Elige de la lista o escribe una opción libre...">
+                            <datalist id="dl-${att.id}">
+                                ${optionsHTML}
+                            </datalist>
+                        `;
+                    } else {
+                        controlHTML = `<input type="text" id="m-txt-${att.id}" value="${vGuardado}" placeholder="Ej: ${att.hint || 'Valor'}">`;
+                    }
+
+                    const isReq = att.required;
+                    const asterisco = isReq ? '<span style="color:#ef4444; font-weight:bold;" title="Obligatorio">*</span>' : '';
+                    
+                    const bloqueHTML = `
+                        <div class="modal-field">
+                            <label>${att.name} ${asterisco} <span style="font-weight:normal; color:#64748b; font-size:10px;">(${att.value_type})</span></label>
+                            ${controlHTML}
+                        </div>
+                    `;
+
+                    if (isReq) {
+                        htmlReq += bloqueHTML;
+                    } else {
+                        htmlOpt += bloqueHTML;
+                        countOpt++;
+                    }
+                });
+
+                htmlContent += htmlReq;
+
+                if (countOpt > 0) {
+                    htmlContent += `
+                        <div style="margin-top: 15px; border-top: 1px dashed #cbd5e1; padding-top: 15px;">
+                            <button type="button" onclick="document.getElementById('opt-attrs').style.display='flex'; this.style.display='none';" style="background: #f8fafc; color: #475569; border: 1px solid #cbd5e1; width: 100%; padding: 10px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: bold;">
+                                + Mostrar ${countOpt} características opcionales (Avanzado)
+                            </button>
+                            <div id="opt-attrs" style="display: none; flex-direction: column; gap: 14px; margin-top: 10px;">
+                                ${htmlOpt}
+                            </div>
+                        </div>
+                    `;
+                }
+
+                contenedor.innerHTML = htmlContent;
+
+            } catch(e) {
+                contenedor.innerHTML = '<div style="color:red; padding:20px;">❌ Error conectando a los atributos oficiales de Mercado Libre.</div>';
+            }
+        }
+
+        async function ejecutarAutollenadoIA(idx) {
+            const titVal = document.getElementById('tit-'+idx).value;
+            const catId = document.getElementById('cat-'+idx).value;
+
+            const formData = new FormData();
+            formData.append('titulo', titVal);
+            formData.append('cat_id', catId);
+
+            const btn = event.target;
+            const textOrig = btn.innerText;
+            btn.innerText = "⏳ Analizando...";
+            btn.disabled = true;
+
+            try {
+                const res = await fetch('/api/autollenar-atributos-ia', { method: 'POST', body: formData });
+                const data = await res.json();
+
+                if (data.atributos) {
+                    if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
+                    
+                    for (const [idAttr, valIA] of Object.entries(data.atributos)) {
+                        const idUpper = String(idAttr).trim ? String(idAttr).trim().toUpperCase() : String(idAttr).toUpperCase();
+                        atributosAdicionalesPorFila[idx][idUpper] = valIA;
+                        
+                        const inputCampo = document.getElementById(`m-txt-${idUpper}`);
+                        if (inputCampo) {
+                            inputCampo.value = valIA;
+                            inputCampo.style.backgroundColor = "#dcfce7";
+                        }
+                    }
+                    actualizarResumenAtributos(idx);
+                }
+            } catch(e) {
+                alert("No se pudieron autollenar algunos atributos.");
+            } finally {
+                btn.innerText = textOrig;
+                btn.disabled = false;
+            }
+        }
+
+        function cerrarModal() {
+            document.getElementById('modal-atributos').style.display = 'none';
+        }
+
+        function guardarAtributosModal() {
+            const idx = document.getElementById('modal-idx').value;
+            
+            atributosPorFila[idx].marca = document.getElementById('m-mar').value;
+            atributosPorFila[idx].modelo = document.getElementById('m-mod').value;
+            
+            document.getElementById('mar-'+idx).value = atributosPorFila[idx].marca;
+            document.getElementById('mod-'+idx).value = atributosPorFila[idx].modelo;
+
+            if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
+            
+            const contenedor = document.getElementById('modal-attr-dinamicos');
+            contenedor.querySelectorAll('input[id^="m-txt-"]').forEach(inp => {
+                const idAttrML = inp.id.replace('m-txt-', '').toUpperCase();
+                if (inp.value.trim() !== "") {
+                    atributosAdicionalesPorFila[idx][idAttrML] = inp.value.trim();
+                } else {
+                    delete atributosAdicionalesPorFila[idx][idAttrML];
+                }
+            });
+
+            actualizarResumenAtributos(idx);
+            cerrarModal();
+        }
+
+        function actualizarResumenAtributos(idx) {
+            const attr = atributosPorFila[idx] || {};
+            const adic = atributosAdicionalesPorFila[idx] || {};
+            let info = `🏷️ ${attr.marca || 'Generico'} / ${attr.modelo || 'Universal'}`;
+            const totalDinamicos = Object.keys(adic).length;
+            if (totalDinamicos > 0) {
+                info += ` | ⚡ +${totalDinamicos} características agregadas`;
+            }
+            document.getElementById('resumen-attr-'+idx).innerText = info;
+        }
+
+        function procesarArchivos(inputElement, idx) {
+            const files = inputElement.files;
+            if (!imagenesPorFila[idx]) imagenesPorFila[idx] = [];
+
+            for (let file of files) {
+                if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+                    alert(`El archivo ${file.name} no es válido. Solo JPG, PNG o WEBP.`);
+                    continue;
+                }
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    if (e.target.result && typeof e.target.result === 'string' && e.target.result.startsWith('data:image/')) {
+                        imagenesPorFila[idx].push(e.target.result);
+                        renderizarGaleriaFila(idx);
+                    }
+                };
+                reader.readAsDataURL(file);
+            }
+        }
+
+        function renderizarGaleriaFila(idx) {
+            const previewArea = document.getElementById(`prev-${idx}`);
+            previewArea.innerHTML = "";
+            imagenesPorFila[idx] = (imagenesPorFila[idx] || []).filter(img => img && typeof img === 'string' && img.startsWith('data:image/'));
+            imagenesPorFila[idx].forEach((b64, pos) => {
+                previewArea.innerHTML += `
+                    <div class="thumb-wrap">
+                        <img src="${b64}">
+                        <button class="del-photo-btn" onclick="eliminarFotoFila(${idx}, ${pos})" title="Eliminar foto">✕</button>
+                    </div>
+                `;
+            });
+        }
+
+        function eliminarFotoFila(idx, pos) {
+            if (imagenesPorFila[idx]) {
+                imagenesPorFila[idx].splice(pos, 1);
+                renderizarGaleriaFila(idx);
+            }
+        }
+        
+        function applyingExpo() {
+            const expoVal = document.getElementById('bulk-exposicion').value;
+            document.querySelectorAll('.select-exposicion').forEach(sel => sel.value = expoVal);
+        }
+
+        function aplicarExposicionMasiva() {
+            const expoVal = document.getElementById('bulk-exposicion').value;
+            document.querySelectorAll('.select-exposicion').forEach(sel => sel.value = expoVal);
+        }
+
+        function applyingEnv() {
+            const envioVal = document.getElementById('bulk-envio').value;
+            document.querySelectorAll('.select-envio').forEach(sel => sel.value = envioVal);
+        }
+
+        function aplicarEnvioMasivo() {
+            const envioVal = document.getElementById('bulk-envio').value;
+            document.querySelectorAll('.select-envio').forEach(sel => sel.value = envioVal);
+        }
+
+        async function abrirModalCategorias() {
+            const fileInput = document.getElementById('file-db');
+            if (!fileInput.files.length) return alert('Selecciona primero un archivo Excel o CSV.');
+
+            const modal = document.getElementById('modal-categoria-mlv');
+            const grid = document.getElementById('lista-categorias-ml');
+            grid.innerHTML = "⏳ Cargando categorías oficiales desde Mercado Libre...";
+            modal.style.display = 'flex';
+
+            try {
+                const res = await fetch('/api/categorias-mlv');
+                const catList = await res.json();
+                
+                grid.innerHTML = `
+                    <div class="category-item selected" onclick="seleccionarCategoria('TODAS', this)" style="grid-column: span 2; background:#e0f2fe; border-color:#0284c7;">
+                        🌐 <b>CARGAR TODO EL INVENTARIO</b> (Sin filtro de categoría)
+                    </div>
+                `;
+
+                catList.forEach(c => {
+                    grid.innerHTML += `
+                        <div class="category-item" onclick="seleccionarCategoria('${c.id}', this)">
+                            📌 ${c.name} <span style="font-size:10px; color:#64748b;">(${c.id})</span>
+                        </div>
+                    `;
+                });
+            } catch(e) {
+                grid.innerHTML = "❌ Error conectando a la API de categorías MLV.";
+            }
+        }
+
+        function seleccionarCategoria(idCat, elemento) {
+            document.querySelectorAll('.category-item').forEach(el => el.classList.remove('selected'));
+            elemento.classList.add('selected');
+            document.getElementById('cat-seleccionada-id').value = idCat;
+        }
+
+        function cerrarModalCategorias() {
+            document.getElementById('modal-categoria-mlv').style.display = 'none';
+        }
+
+        // ==========================================
+        // PROCESAMIENTO MAESTRO DE LOTES CON ACORDEON
+        // ==========================================
+        async function confirmarYCargarInventario() {
+            cerrarModalCategorias();
+            const idCatDefecto = document.getElementById('cat-seleccionada-id').value;
+            const fileInput = document.getElementById('file-db');
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('cuenta', document.getElementById('cuenta-select').value);
+            formData.append('hoja', document.getElementById('hoja-select').value);
+            formData.append('inicio', document.getElementById('rango-inicio').value);
+            formData.append('fin', document.getElementById('rango-fin').value);
+            formData.append('categoria_filtro', idCatDefecto);
+            formData.append('filtrar_duplicados', document.getElementById('filtar-duplicados').checked);
+
+            formData.append('col_tit', document.getElementById('map-tit').value);
+            formData.append('col_sku', document.getElementById('map-sku').value);
+            formData.append('col_mod', document.getElementById('map-mod').value);
+            formData.append('col_pre', document.getElementById('map-pre').value);
+            formData.append('col_stk', document.getElementById('map-stk').value);
+
+            document.getElementById('tabla-container').style.display = 'none';
+            document.getElementById('loader-zona').style.display = 'block';
+            document.getElementById('spinner-percentage').innerText = "0%";
+            document.getElementById('loader-mensaje').innerText = "Iniciando sincronización...";
+            
+            iniciarMonitoreoProgreso();
+            
+            const consola = document.getElementById('resultados');
+            consola.innerText = `⏳ Sincronizando inventario con filtro: [${idCatDefecto}]...`;
+
+            try {
+                const response = await fetch('/previsualizar', { method: 'POST', body: formData });
+                const resultado = await response.json();
+
+                if (resultado.error) return consola.innerText = "❌ " + resultado.error;
+
+                const tbody = document.getElementById('tabla-body');
+                tbody.innerHTML = "";
+
+                const agrupados = {};
+                resultado.productos.forEach((prod, idx) => {
+                    const cName = prod.CategoriaNombre || 'Sin Categoría';
+                    if (!agrupados[cName]) agrupados[cName] = { id: prod.Categoria_ID, items: [] };
+                    agrupados[cName].items.push({prod, idx});
+                });
+
+                for (const [catName, data] of Object.entries(agrupados)) {
+                    const catIdClase = 'cat-grp-' + data.id.replace(/[^a-zA-Z0-9]/g, '');
+                    
+                    tbody.innerHTML += `
+                        <tr class="cat-header" onclick="toggleCatGrupo('${catIdClase}')" style="background: #e2e8f0; cursor: pointer; border-bottom: 2px solid #cbd5e1;">
+                            <td colspan="7" style="padding: 12px; font-size: 14px;">
+                                <span style="font-size:16px;">📂</span> 
+                                <b style="color: #0f172a;">${catName}</b> 
+                                <span style="color: #64748b; font-size: 12px;">(${data.items.length} artículos) - Clic para expandir / contraer</span>
+                            </td>
+                        </tr>
+                    `;
+
+                    data.items.forEach(obj => {
+                        const prod = obj.prod;
+                        const idx = obj.idx;
+
+                        imagenesPorFila[idx] = [];
+                        if (prod.ImagenLocal && typeof prod.ImagenLocal === 'string' && prod.ImagenLocal.startsWith('data:image/')) {
+                            imagenesPorFila[idx].push(prod.ImagenLocal);
+                        }
+                        
+                        atributosPorFila[idx] = {
+                            marca: prod.Marca,
+                            modelo: prod.Modelo,
+                            color: "",
+                            compatibilidad: "",
+                            material: ""
+                        };
+                        atributosAdicionalesPorFila[idx] = {};
+
+                        let gtinDisplay = (prod.GTIN && prod.GTIN !== 'N/A' && prod.GTIN !== 'OMITIR') ? 'block' : 'none';
+                        let selectCustom = (prod.GTIN && prod.GTIN !== 'N/A' && prod.GTIN !== 'OMITIR') ? 'selected' : '';
+                        let selectOmit = (prod.GTIN && prod.GTIN !== 'N/A' && prod.GTIN !== 'OMITIR') ? '' : 'selected';
+
+                        let resumenInit = `🏷️ ${prod.Marca} / ${prod.Modelo}`;
+
+                        let badgesHTML = "";
+                        for (const [nomCuenta, est] of Object.entries(prod.EstadoCuentas)) {
+                            badgesHTML += (est === "EXISTE") 
+                                ? `<span class="account-badge badge-existe">${nomCuenta}: Ya Publicado</span>`
+                                : `<span class="account-badge badge-libre">${nomCuenta}: Libre</span>`;
+                        }
+
+                        tbody.innerHTML += `
+                            <tr class="item-row ${catIdClase}">
+                                <td><input type="checkbox" class="prod-check" data-idx="${idx}" checked></td>
+                                <td>
+                                    <input type="text" id="tit-${idx}" value="${prod.Titulo}" maxlength="60" style="margin-bottom:4px; font-weight:bold;">
+                                    <div class="cat-tag" title="ID: ${prod.Categoria_ID}">📌 ML: ${prod.CategoriaNombre}</div>
+                                    <div id="desc-tag-${idx}" class="desc-tag">📋 Plantilla Oficial (Título x3)</div>
+                                    <div style="font-size:11px; color:#64748b; margin-top:2px;">📁 Hoja: <b>${prod.Hoja}</b></div>
+                                    <div style="margin-top:6px;">${badgesHTML}</div>
+                                    <input type="hidden" id="cat-${idx}" value="${prod.Categoria_ID}">
+                                    <input type="hidden" id="desc-init-${idx}" value="${prod.DescripcionCustom || ''}">
+                                </td>
+                                <td><input type="number" id="pre-${idx}" value="${prod.Precio}" step="0.01"></td>
+                                <td><input type="number" id="stk-${idx}" value="${prod.Stock}"></td>
+                                <td>
+                                    <select id="expo-${idx}" class="select-exposicion attr-select" style="margin-bottom:5px; font-weight:bold;">
+                                        <option value="bronze">Bronce / Estándar</option>
+                                        <option value="gold_special">Clásica</option>
+                                        <option value="gold_pro">Premium</option>
+                                    </select>
+                                    <select id="envio-${idx}" class="select-envio attr-select" style="font-size:11px; font-weight:bold;">
+                                        <option value="me2_free">🟢 Envío Gratis</option>
+                                        <option value="custom_free">🟢 Envío Gratis (Custom)</option>
+                                        <option value="me2_buyer">🔵 Cobro en Destino</option>
+                                        <option value="not_specified">⚪ Acordar con Vendedor</option>
+                                    </select>
+                                </td>
+                                <td>
+                                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:4px; margin-bottom:4px;">
+                                        <input type="text" id="mar-${idx}" value="${prod.Marca}" placeholder="Marca">
+                                        <input type="text" id="mod-${idx}" value="${prod.Modelo}" placeholder="Modelo">
+                                    </div>
+                                    <input type="text" id="sku-${idx}" value="${prod.SKU}" placeholder="SKU" style="margin-bottom:4px;">
+                                    <select id="gtin-razon-${idx}" class="attr-select" onchange="toggleGtin(${idx})" style="margin-bottom:4px; font-size:11px; font-weight:bold;">
+                                        <option value="CUSTOM" ${selectCustom}>Ingresar Código (GTIN)</option>
+                                        <option value="OMITIR" ${selectOmit}>Este producto no posee código</option>
+                                    </select>
+                                    <input type="text" id="gtin-${idx}" value="${prod.GTIN !== 'N/A' ? prod.GTIN : ''}" style="display:${gtinDisplay}; margin-bottom:4px;">
+                                    
+                                    <button type="button" onclick="abrirModal(${idx})" style="background:#0284c7; width:100%; padding:6px; font-size:11px; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold;">
+                                        ⚡ Llenar Ficha Técnica (Obligatorios)
+                                    </button>
+                                    <div id="resumen-attr-${idx}" class="attr-summary">${resumenInit}</div>
+                                </td>
+                                <td>
+                                    <div class="photo-manager">
+                                        <span>📸 Clic o Arrastra fotos aquí</span>
+                                        <input type="file" accept="image/jpeg, image/png, image/webp" multiple onchange="procesarArchivos(this, ${idx})">
+                                    </div>
+                                    <div id="prev-${idx}" class="preview-container"></div>
+                                </td>
+                            </tr>
+                        `;
+                        renderizarGaleriaFila(idx);
+                    });
+                }
+
+                document.getElementById('tabla-container').style.display = 'block';
+                consola.innerText = `✅ ¡Sincronización completa! ${resultado.productos.length} artículos listos.`;
+            } catch(e) {
+                consola.innerText = "❌ Error en sincronización: " + e;
+            } finally {
+                if (intervaloProgreso) clearInterval(intervaloProgreso);
+                setTimeout(() => { document.getElementById('loader-zona').style.display = 'none'; }, 500);
+            }
+        }
+
+        async function cargarGaleriaLocal() {
+            const cont = document.getElementById('galeria-contenedor');
+            cont.innerHTML = "<div style='color:#64748b;'>⏳ Leyendo archivos desde la carpeta lote_imagenes...</div>";
+            try {
+                const res = await fetch('/api/galeria-local');
+                const imgs = await res.json();
+                if (!imgs.length) {
+                    cont.innerHTML = "<div style='color:#64748b;'>No se encontraron imágenes JPG, PNG o WEBP en la carpeta <b>lote_imagenes</b>.</div>";
+                    return;
+                }
+                cont.innerHTML = "";
+                imgs.forEach(item => {
+                    cont.innerHTML += `
+                        <div class="gallery-item">
+                            <img src="${item.b64}">
+                            <span>${item.nombre}</span>
+                        </div>
+                    `;
+                });
+            } catch(e) {
+                cont.innerHTML = "<div style='color:red;'>❌ Error cargando galería local.</div>";
+            }
+        }
+
+        async function ejecutarPublicacion() {
+            const seleccionados = [];
+            document.querySelectorAll('.prod-check:checked').forEach(cb => {
+                const idx = cb.dataset.idx;
+                const attr = atributosPorFila[idx];
+                const adic = atributosAdicionalesPorFila[idx] || {};
+                const razonGtin = document.getElementById('gtin-razon-'+idx).value;
+                let gtinFinal = (razonGtin === 'CUSTOM') ? document.getElementById('gtin-'+idx).value : 'OMITIR';
+
+                seleccionados.push({
+                    "Titulo": document.getElementById('tit-'+idx).value,
+                    "Precio": parseFloat(document.getElementById('pre-'+idx).value),
+                    "Stock": parseInt(document.getElementById('stk-'+idx).value),
+                    "Categoria_ID": document.getElementById('cat-'+idx).value,
+                    "Exposicion": document.getElementById('expo-'+idx).value,
+                    "Envio": document.getElementById('envio-'+idx).value,
+                    "Marca": document.getElementById('mar-'+idx).value,
+                    "Modelo": document.getElementById('mod-'+idx).value,
+                    "SKU": document.getElementById('sku-'+idx).value,
+                    "GTIN": gtinFinal,
+                    "AtributosDinamicos": adic,
+                    "DescripcionCustom": document.getElementById('desc-init-'+idx).value,
+                    "ImagenesB64": imagenesPorFila[idx] || []
+                });
+            });
+
+            if (!seleccionados.length) return alert('No hay artículos seleccionados.');
+            const cuentaSel = document.getElementById('cuenta-select').value;
+            const nomCuenta = document.getElementById('cuenta-select').options[document.getElementById('cuenta-select').selectedIndex].text;
+
+            if (!confirm(`¿Confirmas publicar ${seleccionados.length} artículos en: ${nomCuenta}?`)) return;
+
+            document.getElementById('loader-zona').style.display = 'block';
+            document.getElementById('spinner-percentage').innerText = "0%";
+            document.getElementById('loader-mensaje').innerText = "Iniciando publicación en lote...";
+            iniciarMonitoreoProgreso();
+
+            const consola = document.getElementById('resultados');
+            consola.innerText = `🚀 Publicando lote...`;
+
+            try {
+                const response = await fetch(`/publicar-lote?cuenta=${cuentaSel}`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(seleccionados)
+                });
+                const resData = await response.json();
+                consola.innerText = resData.detalles.join('\\n');
+            } catch(e) {
+                consola.innerText = "❌ Error subiendo lote: " + e;
+            } finally {
+                if (intervaloProgreso) clearInterval(intervaloProgreso);
+                setTimeout(() => { document.getElementById('loader-zona').style.display = 'none'; }, 500);
+            }
+        }
+
+        // ==========================================
+        // FUNCIONES CATÁLOGO (PREMIUM)
         // ==========================================
         async function detectarHojasCat(inputElement) {
             const file = inputElement.files[0];
@@ -1015,7 +1708,17 @@ HTML_INTERFACE = """
             document.getElementById('cat-loader-zona').style.display = 'block';
             document.getElementById('cat-spinner-percentage').innerText = "0%";
             document.getElementById('cat-loader-mensaje').innerText = "Iniciando generación de catálogo...";
-            iniciarMonitoreoProgresoCat();
+            
+            if (intervaloProgreso) clearInterval(intervaloProgreso);
+            intervaloProgreso = setInterval(async () => {
+                try {
+                    const res = await fetch('/estado-progreso');
+                    const info = await res.json();
+                    document.getElementById('cat-spinner-percentage').innerText = info.porcentaje + "%";
+                    document.getElementById('cat-loader-mensaje').innerText = info.mensaje;
+                    if (!info.activo && info.porcentaje >= 100) clearInterval(intervaloProgreso);
+                } catch(e) {}
+            }, 250);
 
             try {
                 const res = await fetch('/api/generar-catalogo', { method: 'POST', body: fd });
@@ -1036,587 +1739,6 @@ HTML_INTERFACE = """
                 document.getElementById('cat-loader-zona').style.display = 'none';
             }
         }
-
-        function iniciarMonitoreoProgresoCat() {
-            if (intervaloProgreso) clearInterval(intervaloProgreso);
-            intervaloProgreso = setInterval(async () => {
-                try {
-                    const res = await fetch('/estado-progreso');
-                    const info = await res.json();
-                    document.getElementById('cat-spinner-percentage').innerText = info.porcentaje + "%";
-                    document.getElementById('cat-loader-mensaje').innerText = info.mensaje;
-                    if (!info.activo && info.porcentaje >= 100) clearInterval(intervaloProgreso);
-                } catch(e) {}
-            }, 250);
-        }
-
-        // ==========================================
-        // UTILIDADES GENERALES
-        // ==========================================
-        async function verificarTokens() {
-            const consolaMain = document.getElementById('resultados');
-            const consolaTokens = document.getElementById('log-tokens');
-            if (consolaMain) consolaMain.innerText = "⏳ Probando conexión y vigencia de tokens en vivo con Mercado Libre...";
-            if (consolaTokens) consolaTokens.innerText = "⏳ Probando conexión y vigencia de tokens en vivo con Mercado Libre...";
-            try {
-                const res = await fetch('/verificar-tokens');
-                const data = await res.json();
-                const textoLog = data.logs.join('\\n');
-                if (consolaMain) consolaMain.innerText = textoLog;
-                if (consolaTokens) consolaTokens.innerText = textoLog;
-            } catch(e) {
-                const errorMsg = "❌ Error al verificar tokens: " + e;
-                if (consolaMain) consolaMain.innerText = errorMsg;
-                if (consolaTokens) consolaTokens.innerText = errorMsg;
-            }
-        }
-
-        function iniciarMonitoreoProgreso() {
-            document.getElementById('loader-zona').style.display = 'block';
-            if (intervaloProgreso) clearInterval(intervaloProgreso);
-            intervaloProgreso = setInterval(async () => {
-                try {
-                    const res = await fetch('/estado-progreso');
-                    const info = await res.json();
-                    document.getElementById('spinner-percentage').innerText = info.porcentaje + "%";
-                    document.getElementById('loader-mensaje').innerText = info.mensaje;
-
-                    if (!info.activo && info.porcentaje >= 100) {
-                        clearInterval(intervaloProgreso);
-                        setTimeout(() => { document.getElementById('loader-zona').style.display = 'none'; }, 800);
-                    }
-                } catch(e) {}
-            }, 250);
-        }
-
-        function cargarDescripcionesCSV(input) {
-            const file = input.files[0];
-            if (!file) return;
-
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                const text = e.target.result;
-                const lineas = text.split('\\n');
-                let matchCount = 0;
-
-                for (let i = 1; i < lineas.length; i++) {
-                    const l = lineas[i].split(',');
-                    if (l.length >= 2) {
-                        const clave = l[0].trim().toLowerCase();
-                        const desc = l.slice(1).join(',').replace(/["']/g, '').trim();
-                        if (clave && desc) descripcionesCSV[clave] = desc;
-                    }
-                }
-
-                document.querySelectorAll('.prod-check').forEach(cb => {
-                    const idx = cb.dataset.idx;
-                    const skuVal = (document.getElementById('sku-'+idx).value || '').toLowerCase();
-                    const titVal = (document.getElementById('tit-'+idx).value || '').toLowerCase();
-
-                    if (descripcionesCSV[skuVal] || descripcionesCSV[titVal]) {
-                        matchCount++;
-                        document.getElementById('desc-tag-'+idx).innerText = "📄 Desc. CSV Asignada";
-                    }
-                });
-
-                document.getElementById('csv-status').innerText = `✅ Se asignaron descripciones personalizadas a ${matchCount} artículos en memoria.`;
-                alert(`✅ Archivo CSV procesado con éxito.`);
-            };
-            reader.readAsText(file);
-        }
-
-        function toggleGtin(idx) {
-            const selectVal = document.getElementById('gtin-razon-'+idx).value;
-            const inputField = document.getElementById('gtin-'+idx);
-            inputField.style.display = (selectVal === 'CUSTOM') ? 'block' : 'none';
-        }
-
-        function abrirModalMasivo() { document.getElementById('modal-bulk-atributos').style.display = 'flex'; }
-        function cerrarModalMasivo() { document.getElementById('modal-bulk-atributos').style.display = 'none'; }
-
-        function aplicarAtributosMasivos() {
-            const marVal = document.getElementById('bm-mar').value.trim();
-            const colorVal = document.getElementById('bm-color').value.trim();
-            const compatVal = document.getElementById('bm-compat').value.trim();
-            const matVal = document.getElementById('bm-mat').value.trim();
-            let count = 0;
-
-            document.querySelectorAll('.prod-check:checked').forEach(cb => {
-                const idx = cb.dataset.idx;
-                if (marVal) {
-                    atributosPorFila[idx].marca = marVal;
-                    document.getElementById('mar-'+idx).value = marVal;
-                }
-                if (colorVal) {
-                    if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
-                    atributosAdicionalesPorFila[idx]["COLOR"] = colorVal;
-                }
-                if (compatVal) {
-                    if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
-                    atributosAdicionalesPorFila[idx]["COMPATIBLE_MODELS"] = compatVal;
-                }
-                if (matVal) {
-                    if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
-                    atributosAdicionalesPorFila[idx]["MATERIAL"] = matVal;
-                }
-                actualizarResumenAtributos(idx);
-                count++;
-            });
-            cerrarModalMasivo();
-            alert(`✅ Características aplicadas masivamente a ${count} artículos.`);
-        }
-
-        function obtenerValorGuardado(att, attrAdic, attrBase) {
-            if (attrAdic[att.id] !== undefined) return attrAdic[att.id];
-            for (const [k, val] of Object.entries(attrAdic)) {
-                if (String(k).toUpperCase() === String(att.id).toUpperCase()) return val;
-                if (String(k).toLowerCase() === String(att.name).toLowerCase()) return val;
-            }
-            const idNorm = String(att.id).toUpperCase();
-            const nomNorm = String(att.name).toLowerCase();
-            if ((idNorm === "COLOR" || nomNorm.includes("color")) && attrBase.color) return attrBase.color;
-            if ((idNorm === "COMPATIBLE_MODELS" || idNorm === "LINE" || nomNorm.includes("compatib")) && attrBase.compatibilidad) return attrBase.compatibilidad;
-            if ((idNorm === "MATERIAL" || nomNorm.includes("material")) && attrBase.material) return attrBase.material;
-            return "";
-        }
-
-        async function abrirModal(idx) {
-            document.getElementById('modal-idx').value = idx;
-            document.getElementById('modal-atributos').style.display = 'flex';
-            const contenedor = document.getElementById('modal-attr-dinamicos');
-            contenedor.innerHTML = '<div style="text-align:center; padding:20px; color:#0284c7; font-weight:bold;">⏳ Consultado atributos en vivo para esta categoría en Mercado Libre...</div>';
-            
-            const catId = document.getElementById('cat-'+idx).value;
-            const attrBase = atributosPorFila[idx] || {};
-            const attrAdic = atributosAdicionalesPorFila[idx] || {};
-
-            try {
-                const res = await fetch(`/api/atributos-categoria/${catId}`);
-                const listaAttrML = await res.json();
-
-                contenedor.innerHTML = `
-                    <div style="margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; background: #e0f2fe; padding: 12px; border-radius: 8px; border: 1px solid #7dd3fc;">
-                        <span style="font-size: 13px; font-weight: 800; color: #0369a1;">🤖 Relleno Inteligente de Ficha Técnica</span>
-                        <button type="button" onclick="ejecutarAutollenadoIA(${idx})" style="background: #0284c7; font-size: 11px; padding: 6px 14px; color: white; border: none; border-radius: 8px; cursor: pointer;">
-                            ⚡ Autollenar con IA (Gemini)
-                        </button>
-                    </div>
-                    <div class="modal-field">
-                        <label>Marca:</label>
-                        <input type="text" id="m-mar" value="${attrBase.marca || ''}">
-                    </div>
-                    <div class="modal-field">
-                        <label>Modelo:</label>
-                        <input type="text" id="m-mod" value="${attrBase.modelo || ''}">
-                    </div>
-                `;
-
-                listaAttrML.forEach(att => {
-                    const vGuardado = obtenerValorGuardado(att, attrAdic, attrBase);
-                    let controlHTML = "";
-
-                    if (att.values && att.values.length > 0) {
-                        let optionsHTML = "";
-                        att.values.forEach(valML => { optionsHTML += `<option value="${valML.name}">`; });
-                        controlHTML = `
-                            <input type="text" list="dl-${att.id}" id="m-txt-${att.id}" value="${vGuardado}" placeholder="Elige de la lista o escribe una opción libre...">
-                            <datalist id="dl-${att.id}">
-                                ${optionsHTML}
-                            </datalist>
-                        `;
-                    } else {
-                        controlHTML = `<input type="text" id="m-txt-${att.id}" value="${vGuardado}" placeholder="Ej: ${att.hint || 'Valor'}">`;
-                    }
-
-                    contenedor.innerHTML += `
-                        <div class="modal-field">
-                            <label>${att.name} <span style="font-weight:normal; color:#64748b; font-size:10px;">(${att.value_type})</span></label>
-                            ${controlHTML}
-                        </div>
-                    `;
-                });
-            } catch(e) {
-                contenedor.innerHTML = '<div style="color:red; padding:20px;">❌ Error conectando a los atributos oficiales de Mercado Libre.</div>';
-            }
-        }
-
-        async function ejecutarAutollenadoIA(idx) {
-            const titVal = document.getElementById('tit-'+idx).value;
-            const catId = document.getElementById('cat-'+idx).value;
-            const formData = new FormData();
-            formData.append('titulo', titVal);
-            formData.append('cat_id', catId);
-
-            const btn = event.target;
-            const textOrig = btn.innerText;
-            btn.innerText = "⏳ Analizando...";
-            btn.disabled = true;
-
-            try {
-                const res = await fetch('/api/autollenar-atributos-ia', { method: 'POST', body: formData });
-                const data = await res.json();
-
-                if (data.atributos) {
-                    if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
-                    for (const [idAttr, valIA] of Object.entries(data.atributos)) {
-                        const idUpper = String(idAttr).trim ? String(idAttr).trim().toUpperCase() : String(idAttr).toUpperCase();
-                        atributosAdicionalesPorFila[idx][idUpper] = valIA;
-                        const inputCampo = document.getElementById(`m-txt-${idUpper}`);
-                        if (inputCampo) {
-                            inputCampo.value = valIA;
-                            inputCampo.style.backgroundColor = "#dcfce7";
-                        }
-                    }
-                    actualizarResumenAtributos(idx);
-                }
-            } catch(e) {
-                alert("No se pudieron autollenar algunos atributos.");
-            } finally {
-                btn.innerText = textOrig;
-                btn.disabled = false;
-            }
-        }
-
-        function cerrarModal() { document.getElementById('modal-atributos').style.display = 'none'; }
-
-        function guardarAtributosModal() {
-            const idx = document.getElementById('modal-idx').value;
-            atributosPorFila[idx].marca = document.getElementById('m-mar').value;
-            atributosPorFila[idx].modelo = document.getElementById('m-mod').value;
-            document.getElementById('mar-'+idx).value = atributosPorFila[idx].marca;
-            document.getElementById('mod-'+idx).value = atributosPorFila[idx].modelo;
-
-            if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
-            const contenedor = document.getElementById('modal-attr-dinamicos');
-            contenedor.querySelectorAll('input[id^="m-txt-"]').forEach(inp => {
-                const idAttrML = inp.id.replace('m-txt-', '').toUpperCase();
-                if (inp.value.trim() !== "") {
-                    atributosAdicionalesPorFila[idx][idAttrML] = inp.value.trim();
-                } else {
-                    delete atributosAdicionalesPorFila[idx][idAttrML];
-                }
-            });
-
-            actualizarResumenAtributos(idx);
-            cerrarModal();
-        }
-
-        function actualizarResumenAtributos(idx) {
-            const attr = atributosPorFila[idx] || {};
-            const adic = atributosAdicionalesPorFila[idx] || {};
-            let info = `🏷️ ${attr.marca || 'Generico'} / ${attr.modelo || 'Universal'}`;
-            const totalDinamicos = Object.keys(adic).length;
-            if (totalDinamicos > 0) {
-                info += ` | ⚡ +${totalDinamicos} características oficiales MLV`;
-            }
-            document.getElementById('resumen-attr-'+idx).innerText = info;
-        }
-
-        function procesarArchivos(inputElement, idx) {
-            const files = inputElement.files;
-            if (!imagenesPorFila[idx]) imagenesPorFila[idx] = [];
-            for (let file of files) {
-                if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
-                    alert(`El archivo ${file.name} no es válido. Solo JPG, PNG o WEBP.`);
-                    continue;
-                }
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    if (e.target.result && typeof e.target.result === 'string' && e.target.result.startsWith('data:image/')) {
-                        imagenesPorFila[idx].push(e.target.result);
-                        renderizarGaleriaFila(idx);
-                    }
-                };
-                reader.readAsDataURL(file);
-            }
-        }
-
-        function renderizarGaleriaFila(idx) {
-            const previewArea = document.getElementById(`prev-${idx}`);
-            previewArea.innerHTML = "";
-            imagenesPorFila[idx] = (imagenesPorFila[idx] || []).filter(img => img && typeof img === 'string' && img.startsWith('data:image/'));
-            imagenesPorFila[idx].forEach((b64, pos) => {
-                previewArea.innerHTML += `
-                    <div class="thumb-wrap">
-                        <img src="${b64}">
-                        <button class="del-photo-btn" onclick="eliminarFotoFila(${idx}, ${pos})" title="Eliminar foto">✕</button>
-                    </div>
-                `;
-            });
-        }
-
-        function eliminarFotoFila(idx, pos) {
-            if (imagenesPorFila[idx]) {
-                imagenesPorFila[idx].splice(pos, 1);
-                renderizarGaleriaFila(idx);
-            }
-        }
-        
-        function aplicarExposicionMasiva() {
-            const expoVal = document.getElementById('bulk-exposicion').value;
-            document.querySelectorAll('.select-exposicion').forEach(sel => sel.value = expoVal);
-        }
-
-        function aplicarEnvioMasivo() {
-            const envioVal = document.getElementById('bulk-envio').value;
-            document.querySelectorAll('.select-envio').forEach(sel => sel.value = envioVal);
-        }
-
-        async function abrirModalCategorias() {
-            const fileInput = document.getElementById('file-db');
-            if (!fileInput.files.length) return alert('Selecciona primero un archivo Excel o CSV.');
-
-            const modal = document.getElementById('modal-categoria-mlv');
-            const grid = document.getElementById('lista-categorias-ml');
-            grid.innerHTML = "⏳ Cargando categorías oficiales desde Mercado Libre...";
-            modal.style.display = 'flex';
-
-            try {
-                const res = await fetch('/api/categorias-mlv');
-                const catList = await res.json();
-                
-                grid.innerHTML = `
-                    <div class="category-item selected" onclick="seleccionarCategoria('TODAS', this)" style="grid-column: span 2; background:#e0f2fe; border-color:#0284c7;">
-                        🌐 <b>CARGAR TODO EL INVENTARIO</b> (Sin filtro de categoría)
-                    </div>
-                `;
-
-                catList.forEach(c => {
-                    grid.innerHTML += `
-                        <div class="category-item" onclick="seleccionarCategoria('${c.id}', this)">
-                            📌 ${c.name} <span style="font-size:10px; color:#64748b;">(${c.id})</span>
-                        </div>
-                    `;
-                });
-            } catch(e) {
-                grid.innerHTML = "❌ Error conectando a la API de categorías MLV.";
-            }
-        }
-
-        function seleccionarCategoria(idCat, elemento) {
-            document.querySelectorAll('.category-item').forEach(el => el.classList.remove('selected'));
-            elemento.classList.add('selected');
-            document.getElementById('cat-seleccionada-id').value = idCat;
-        }
-
-        function cerrarModalCategorias() {
-            document.getElementById('modal-categoria-mlv').style.display = 'none';
-        }
-
-        async function confirmarYCargarInventario() {
-            cerrarModalCategorias();
-            const idCat = document.getElementById('cat-seleccionada-id').value;
-            const fileInput = document.getElementById('file-db');
-
-            const formData = new FormData();
-            formData.append('file', fileInput.files[0]);
-            formData.append('cuenta', document.getElementById('cuenta-select').value);
-            formData.append('hoja', document.getElementById('hoja-select').value);
-            formData.append('inicio', document.getElementById('rango-inicio').value);
-            formData.append('fin', document.getElementById('rango-fin').value);
-            formData.append('categoria_filtro', idCat);
-            formData.append('filtrar_duplicados', document.getElementById('filtar-duplicados').checked);
-
-            formData.append('col_tit', document.getElementById('map-tit').value);
-            formData.append('col_sku', document.getElementById('map-sku').value);
-            formData.append('col_mod', document.getElementById('map-mod').value);
-            formData.append('col_pre', document.getElementById('map-pre').value);
-            formData.append('col_stk', document.getElementById('map-stk').value);
-
-            document.getElementById('tabla-container').style.display = 'none';
-            document.getElementById('loader-zona').style.display = 'block';
-            document.getElementById('spinner-percentage').innerText = "0%";
-            document.getElementById('loader-mensaje').innerText = "Iniciando sincronización...";
-            
-            iniciarMonitoreoProgreso();
-            
-            const consola = document.getElementById('resultados');
-            consola.innerText = `⏳ Sincronizando inventario con filtro: [${idCat}]...`;
-
-            try {
-                const response = await fetch('/previsualizar', { method: 'POST', body: formData });
-                const resultado = await response.json();
-
-                if (resultado.error) return consola.innerText = "❌ " + resultado.error;
-
-                const tbody = document.getElementById('tabla-body');
-                tbody.innerHTML = "";
-
-                resultado.productos.forEach((prod, idx) => {
-                    imagenesPorFila[idx] = [];
-                    if (prod.ImagenLocal && typeof prod.ImagenLocal === 'string' && prod.ImagenLocal.startsWith('data:image/')) {
-                        imagenesPorFila[idx].push(prod.ImagenLocal);
-                    }
-                    
-                    atributosPorFila[idx] = {
-                        marca: prod.Marca,
-                        modelo: prod.Modelo,
-                        color: "",
-                        compatibilidad: "",
-                        material: ""
-                    };
-                    atributosAdicionalesPorFila[idx] = {};
-
-                    let gtinDisplay = (prod.GTIN && prod.GTIN !== 'N/A' && prod.GTIN !== 'OMITIR') ? 'block' : 'none';
-                    let selectCustom = (prod.GTIN && prod.GTIN !== 'N/A' && prod.GTIN !== 'OMITIR') ? 'selected' : '';
-                    let selectOmit = (prod.GTIN && prod.GTIN !== 'N/A' && prod.GTIN !== 'OMITIR') ? '' : 'selected';
-
-                    let resumenInit = `🏷️ ${prod.Marca} / ${prod.Modelo}`;
-
-                    let badgesHTML = "";
-                    for (const [nomCuenta, est] of Object.entries(prod.EstadoCuentas)) {
-                        badgesHTML += (est === "EXISTE") 
-                            ? `<span class="account-badge badge-existe">${nomCuenta}: Ya Publicado</span>`
-                            : `<span class="account-badge badge-libre">${nomCuenta}: Libre</span>`;
-                    }
-
-                    tbody.innerHTML += `
-                        <tr>
-                            <td><input type="checkbox" class="prod-check" data-idx="${idx}" checked></td>
-                            <td>
-                                <input type="text" id="tit-${idx}" value="${prod.Titulo}" maxlength="60" style="margin-bottom:4px; font-weight:bold;">
-                                <div class="cat-tag" title="ID: ${prod.Categoria_ID}">📌 ML: ${prod.CategoriaNombre}</div>
-                                <div id="desc-tag-${idx}" class="desc-tag">📋 Plantilla Oficial (Título x3)</div>
-                                <div style="font-size:11px; color:#64748b; margin-top:2px;">📁 Hoja: <b>${prod.Hoja}</b> (${prod.CategoriaOrigen})</div>
-                                <div style="margin-top:6px;">${badgesHTML}</div>
-                                <input type="hidden" id="cat-${idx}" value="${prod.Categoria_ID}">
-                                <input type="hidden" id="desc-init-${idx}" value="${prod.DescripcionCustom || ''}">
-                            </td>
-                            <td><input type="number" id="pre-${idx}" value="${prod.Precio}" step="0.01"></td>
-                            <td><input type="number" id="stk-${idx}" value="${prod.Stock}"></td>
-                            <td>
-                                <select id="expo-${idx}" class="select-exposicion attr-select" style="margin-bottom:5px; font-weight:bold;">
-                                    <option value="bronze">Bronce / Estándar</option>
-                                    <option value="gold_special">Clásica</option>
-                                    <option value="gold_pro">Premium</option>
-                                </select>
-                                <select id="envio-${idx}" class="select-envio attr-select" style="font-size:11px; font-weight:bold;">
-                                    <option value="me2_free">🟢 Envío Gratis</option>
-                                    <option value="custom_free">🟢 Envío Gratis Nacional (Custom)</option>
-                                    <option value="me2_buyer">🔵 Cobro en Destino</option>
-                                    <option value="not_specified">⚪ Acordar con Vendedor</option>
-                                </select>
-                            </td>
-                            <td>
-                                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:4px; margin-bottom:4px;">
-                                    <input type="text" id="mar-${idx}" value="${prod.Marca}" placeholder="Marca">
-                                    <input type="text" id="mod-${idx}" value="${prod.Modelo}" placeholder="Modelo">
-                                </div>
-                                <input type="text" id="sku-${idx}" value="${prod.SKU}" placeholder="SKU" style="margin-bottom:4px;">
-                                <select id="gtin-razon-${idx}" class="attr-select" onchange="toggleGtin(${idx})" style="margin-bottom:4px; font-size:11px; font-weight:bold;">
-                                    <option value="CUSTOM" ${selectCustom}>Ingresar Código (GTIN)</option>
-                                    <option value="OMITIR" ${selectOmit}>Este producto no posee código</option>
-                                </select>
-                                <input type="text" id="gtin-${idx}" value="${prod.GTIN !== 'N/A' ? prod.GTIN : ''}" style="display:${gtinDisplay}; margin-bottom:4px;">
-                                <button onclick="abrirModal(${idx})" style="background:#0284c7; width:100%; padding:4px; font-size:11px; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">🛠️ Ver / Editar + Características Oficiales MLV</button>
-                                <div id="resumen-attr-${idx}" class="attr-summary">${resumenInit}</div>
-                            </td>
-                            <td>
-                                <div class="photo-manager">
-                                    <span>📸 Clic o Arrastra fotos aquí</span>
-                                    <input type="file" accept="image/jpeg, image/png, image/webp" multiple onchange="procesarArchivos(this, ${idx})">
-                                </div>
-                                <div id="prev-${idx}" class="preview-container"></div>
-                            </td>
-                        </tr>
-                    `;
-                    
-                    renderizarGaleriaFila(idx);
-                });
-
-                document.getElementById('tabla-container').style.display = 'block';
-                consola.innerText = `✅ ¡Sincronización completa! ${resultado.productos.length} artículos listos.`;
-            } catch(e) {
-                consola.innerText = "❌ Error en sincronización: " + e;
-            } finally {
-                if (intervaloProgreso) clearInterval(intervaloProgreso);
-                setTimeout(() => { document.getElementById('loader-zona').style.display = 'none'; }, 500);
-            }
-        }
-
-        async function cargarGaleriaLocal() {
-            const cont = document.getElementById('galeria-contenedor');
-            cont.innerHTML = "<div style='color:#64748b;'>⏳ Leyendo archivos desde la carpeta lote_imagenes...</div>";
-            try {
-                const res = await fetch('/api/galeria-local');
-                const imgs = await res.json();
-                if (!imgs.length) {
-                    cont.innerHTML = "<div style='color:#64748b;'>No se encontraron imágenes JPG, PNG o WEBP en la carpeta <b>lote_imagenes</b>.</div>";
-                    return;
-                }
-                cont.innerHTML = "";
-                imgs.forEach(item => {
-                    cont.innerHTML += `
-                        <div class="gallery-item">
-                            <img src="${item.b64}">
-                            <span>${item.nombre}</span>
-                        </div>
-                    `;
-                });
-            } catch(e) {
-                cont.innerHTML = "<div style='color:red;'>❌ Error cargando galería local.</div>";
-            }
-        }
-
-        function toggleAll(source) {
-            document.querySelectorAll('.prod-check').forEach(cb => cb.checked = source.checked);
-        }
-
-        async function ejecutarPublicacion() {
-            const seleccionados = [];
-            document.querySelectorAll('.prod-check:checked').forEach(cb => {
-                const idx = cb.dataset.idx;
-                const attr = atributosPorFila[idx];
-                const adic = atributosAdicionalesPorFila[idx] || {};
-                const razonGtin = document.getElementById('gtin-razon-'+idx).value;
-                let gtinFinal = (razonGtin === 'CUSTOM') ? document.getElementById('gtin-'+idx).value : 'OMITIR';
-
-                seleccionados.push({
-                    "Titulo": document.getElementById('tit-'+idx).value,
-                    "Precio": parseFloat(document.getElementById('pre-'+idx).value),
-                    "Stock": parseInt(document.getElementById('stk-'+idx).value),
-                    "Categoria_ID": document.getElementById('cat-'+idx).value,
-                    "Exposicion": document.getElementById('expo-'+idx).value,
-                    "Envio": document.getElementById('envio-'+idx).value,
-                    "Marca": document.getElementById('mar-'+idx).value,
-                    "Modelo": document.getElementById('mod-'+idx).value,
-                    "SKU": document.getElementById('sku-'+idx).value,
-                    "GTIN": gtinFinal,
-                    "AtributosDinamicos": adic,
-                    "DescripcionCustom": document.getElementById('desc-init-'+idx).value,
-                    "ImagenesB64": imagenesPorFila[idx] || []
-                });
-            });
-
-            if (!seleccionados.length) return alert('No hay artículos seleccionados.');
-            const cuentaSel = document.getElementById('cuenta-select').value;
-            const nomCuenta = document.getElementById('cuenta-select').options[document.getElementById('cuenta-select').selectedIndex].text;
-
-            if (!confirm(`¿Confirmas publicar ${seleccionados.length} artículos en: ${nomCuenta}?`)) return;
-
-            document.getElementById('loader-zona').style.display = 'block';
-            document.getElementById('spinner-percentage').innerText = "0%";
-            document.getElementById('loader-mensaje').innerText = "Iniciando publicación en lote...";
-            iniciarMonitoreoProgreso();
-
-            const consola = document.getElementById('resultados');
-            consola.innerText = `🚀 Publicando lote...`;
-
-            try {
-                const response = await fetch(`/publicar-lote?cuenta=${cuentaSel}`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(seleccionados)
-                });
-                const resData = await response.json();
-                consola.innerText = resData.detalles.join('\\n');
-            } catch(e) {
-                consola.innerText = "❌ Error subiendo lote: " + e;
-            } finally {
-                if (intervaloProgreso) clearInterval(intervaloProgreso);
-                setTimeout(() => { document.getElementById('loader-zona').style.display = 'none'; }, 500);
-            }
-        }
-
     </script>
 </body>
 </html>
@@ -1636,10 +1758,10 @@ def endpoint_categorias_mlv():
     return obtener_categorias_raices_mlv()
 
 @app.post("/api/hojas-excel")
-async def obtener_hojas_excel(file: UploadFile = File(...)):
+def obtener_hojas_excel(file: UploadFile = File(...)):
     temp_filename = f"temp_sheets_{file.filename}"
     with open(temp_filename, "wb") as buffer:
-        buffer.write(await file.read())
+        buffer.write(file.file.read())
     
     hojas = []
     try:
@@ -1660,10 +1782,10 @@ async def obtener_hojas_excel(file: UploadFile = File(...)):
     return {"hojas": hojas}
 
 @app.post("/api/columnas-excel")
-async def endpoint_columnas_excel(file: UploadFile = File(...), hoja: str = Form("TODAS")):
+def endpoint_columnas_excel(file: UploadFile = File(...), hoja: str = Form("TODAS")):
     temp_filename = f"temp_cols_{file.filename}"
     with open(temp_filename, "wb") as buffer:
-        buffer.write(await file.read())
+        buffer.write(file.file.read())
     
     columnas = obtener_encabezados_excel(temp_filename, hoja_objetivo=hoja)
     time.sleep(0.1)
@@ -1673,10 +1795,10 @@ async def endpoint_columnas_excel(file: UploadFile = File(...), hoja: str = Form
     return columnas
 
 @app.post("/api/vista-previa-excel")
-async def endpoint_vista_previa_excel(file: UploadFile = File(...)):
+def endpoint_vista_previa_excel(file: UploadFile = File(...)):
     temp_filename = f"temp_preview_{file.filename}"
     with open(temp_filename, "wb") as buffer:
-        buffer.write(await file.read())
+        buffer.write(file.file.read())
     
     vistas = obtener_vista_previa_excel(temp_filename)
     time.sleep(0.1)
@@ -1688,7 +1810,7 @@ async def endpoint_vista_previa_excel(file: UploadFile = File(...)):
 @app.get("/api/atributos-categoria/{cat_id}")
 def endpoint_atributos_categoria(cat_id: str):
     try:
-        url = f"https://api.mercadolibre.com/categories/{cat_id}/attributes"
+        url = f"{API_ML}/categories/{cat_id}/attributes"
         res = requests.get(url, timeout=6)
         if res.status_code == 200:
             attrs = res.json()
@@ -1697,13 +1819,16 @@ def endpoint_atributos_categoria(cat_id: str):
             for att in attrs:
                 aid = att.get("id")
                 if aid not in PROHIBIDOS and not att.get("read_only", False):
+                    es_requerido = att.get("tags", {}).get("required", False)
                     relevantes.append({
                         "id": aid,
                         "name": att.get("name"),
                         "value_type": att.get("value_type", "string"),
                         "hint": att.get("hint", ""),
-                        "values": att.get("values", [])[:20]
+                        "values": att.get("values", [])[:20],
+                        "required": es_requerido
                     })
+            relevantes.sort(key=lambda x: not x["required"])
             return relevantes
     except Exception:
         pass
@@ -1732,7 +1857,7 @@ def endpoint_galeria_local():
     return lista_fotos
 
 @app.post("/api/autollenar-atributos-ia")
-async def autollenar_atributos_ia(
+def autollenar_atributos_ia(
     titulo: str = Form(...),
     cat_id: str = Form(...)
 ):
@@ -1740,7 +1865,7 @@ async def autollenar_atributos_ia(
     if not cliente_ia:
         return {"error": "La API de Gemini no está configurada en el servidor."}
     try:
-        url_attr = f"https://api.mercadolibre.com/categories/{cat_id}/attributes"
+        url_attr = f"{API_ML}/categories/{cat_id}/attributes"
         res = requests.get(url_attr, timeout=6)
         if res.status_code != 200:
             return {"error": "No se pudieron obtener los atributos de Mercado Libre."}
@@ -1806,8 +1931,7 @@ def verificar_tokens_endpoint():
             token = datos.get("access_token")
             headers = {"Authorization": f"Bearer {token}"}
             
-            # URL separada matemáticamente para evitar que el portapapeles la rompa
-            url_me = "https://" + "api.mercadolibre.com/users/me"
+            url_me = f"{API_ML}/users/me"
             res = requests.get(url_me, headers=headers)
             
             if res.status_code == 200:
@@ -1830,7 +1954,7 @@ def home():
     return HTML_INTERFACE
 
 @app.post("/previsualizar")
-async def previsualizar_archivo(
+def previsualizar_archivo(
     file: UploadFile = File(...), 
     cuenta: str = Form(...),
     hoja: str = Form("TODAS"),
@@ -1847,7 +1971,8 @@ async def previsualizar_archivo(
     actualizar_progreso(5, "Cargando archivo en memoria...")
     PROGRESO_ACTUAL["activo"] = True
     temp_filename = f"temp_{file.filename}"
-    with open(temp_filename, "wb") as buffer: buffer.write(await file.read())
+    with open(temp_filename, "wb") as buffer: 
+        buffer.write(file.file.read())
 
     archivos_a_escanear = listar_archivos_token()
     titulos_por_cuenta = {}
@@ -1862,7 +1987,7 @@ async def previsualizar_archivo(
         else:
             titulos_por_cuenta[nombre_c] = set()
 
-    token_ref = obtener_token(archivos_a_escanear[0])
+    token_ref = obtener_token(archivos_a_escanear[0]) if archivos_a_escanear else None
     headers_ref = {"Authorization": f"Bearer {token_ref}", "Content-Type": "application/json"} if token_ref else {}
 
     mapa_manual = {
@@ -1877,6 +2002,7 @@ async def previsualizar_archivo(
         filas_procesadas = procesar_excel_heuristico(temp_filename, hoja_objetivo=hoja, mapa_manual=mapa_manual)
     except Exception as e:
         PROGRESO_ACTUAL["activo"] = False
+        if os.path.exists(temp_filename): os.remove(temp_filename)
         return {"error": f"Error heurístico leyendo el archivo: {str(e)}"}
 
     idx_inicio = max(0, inicio - 1)
@@ -1887,7 +2013,7 @@ async def previsualizar_archivo(
     cache_categorias_adivinadas = {}
     
     for indice, item in enumerate(filas_rango):
-        await asyncio.sleep(0.01)
+        time.sleep(0.01)
         porcentaje_actual = int(20 + ((indice + 1) / max(1, total_filas)) * 75)
         
         titulo = item["Titulo"]
@@ -1921,7 +2047,7 @@ async def previsualizar_archivo(
         cat_origen = item["CategoriaOrigen"]
         nom_hoja = item["Hoja"]
 
-        if token_ref:
+        if headers_ref:
             if titulo in cache_categorias_adivinadas:
                 cat_id, cat_nombre = cache_categorias_adivinadas[titulo]
             else:
@@ -1951,10 +2077,10 @@ async def previsualizar_archivo(
     actualizar_progreso(100, "¡Sincronización Finalizada!")
     PROGRESO_ACTUAL["activo"] = False
     
-    return {"productos": sorted(productos_activos, key=lambda x: x["Categoria_ID"])}
+    return {"productos": sorted(productos_activos, key=lambda x: x["CategoriaNombre"])}
 
 @app.post("/publicar-lote")
-async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
+def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
     PROGRESO_ACTUAL["activo"] = True
     archivos_destino = listar_archivos_token() if cuenta == "TODAS" else [cuenta]
     logs_totales = []
@@ -1977,7 +2103,7 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
             pass
 
         for prod in productos:
-            await asyncio.sleep(0.01)
+            time.sleep(0.01)
             procesados += 1
             porcentaje = int((procesados / max(1, total_items)) * 100)
             titulo_original = prod['Titulo'][:60].strip()
@@ -2036,7 +2162,7 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                 datos_publicacion["pictures"] = fotos_payload
 
             try:
-                url_items = "[https://api.mercadolibre.com/items](https://api.mercadolibre.com/items)"
+                url_items = f"{API_ML}/items"
                 respuesta = requests.post(url_items, headers=headers, json=datos_publicacion, timeout=12)
                 
                 if respuesta.status_code == 201:
@@ -2044,9 +2170,9 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                     item_id = item_data.get('id')
                     permalink = item_data.get('permalink')
                     
-                    await asyncio.sleep(0.5)
+                    time.sleep(0.5)
                     try:
-                        url_desc = f"[https://api.mercadolibre.com/items/](https://api.mercadolibre.com/items/){item_id}/description"
+                        url_desc = f"{API_ML}/items/{item_id}/description"
                         res_desc = requests.post(url_desc, headers=headers, json=payload_desc, timeout=10)
                         if res_desc.status_code not in [200, 201]:
                             requests.put(url_desc, headers=headers, json=payload_desc, timeout=10)
@@ -2054,7 +2180,7 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                         print(f"Aviso - Descripción no subida a {item_id}: {e_desc}")
 
                     try:
-                        url_put = f"[https://api.mercadolibre.com/items/](https://api.mercadolibre.com/items/){item_id}"
+                        url_put = f"{API_ML}/items/{item_id}"
                         requests.put(url_put, headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=10)
                     except Exception:
                         pass
@@ -2065,22 +2191,24 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                     if "restrictions_coliving" in error_texto:
                         titulo_mascarado = re.sub(r'(?i)\b(canon|hp|epson|brother|samsung|apple|sony)\b', 'Compatible', titulo_original)
                         datos_publicacion["title"] = titulo_mascarado
-                        res_bypass = requests.post("[https://api.mercadolibre.com/items](https://api.mercadolibre.com/items)", headers=headers, json=datos_publicacion, timeout=12)
+                        
+                        url_items = f"{API_ML}/items"
+                        res_bypass = requests.post(url_items, headers=headers, json=datos_publicacion, timeout=12)
                         if res_bypass.status_code == 201:
                             item_data = res_bypass.json()
                             item_id = item_data.get('id')
                             permalink = item_data.get('permalink')
                             
-                            await asyncio.sleep(0.5)
+                            time.sleep(0.5)
                             try:
-                                url_desc = f"[https://api.mercadolibre.com/items/](https://api.mercadolibre.com/items/){item_id}/description"
+                                url_desc = f"{API_ML}/items/{item_id}/description"
                                 res_desc = requests.post(url_desc, headers=headers, json=payload_desc, timeout=10)
                                 if res_desc.status_code not in [200, 201]:
                                     requests.put(url_desc, headers=headers, json=payload_desc, timeout=10)
                             except Exception:
                                 pass
 
-                            url_put = f"[https://api.mercadolibre.com/items/](https://api.mercadolibre.com/items/){item_id}"
+                            url_put = f"{API_ML}/items/{item_id}"
                             requests.put(url_put, headers=headers, json={"title": titulo_original}, timeout=10)
                             requests.put(url_put, headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=10)
                             logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO (Bypass Catálogo)! -> {permalink}")
@@ -2098,7 +2226,7 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
     return {"detalles": logs_totales}
 
 @app.post("/api/generar-catalogo")
-async def generar_catalogo_endpoint(
+def generar_catalogo_endpoint(
     file: UploadFile = File(...),
     cuenta: str = Form(...),
     hoja: str = Form("TODAS"),
@@ -2115,7 +2243,7 @@ async def generar_catalogo_endpoint(
     actualizar_progreso(10, "Cargando Excel...")
     temp_filename = f"temp_catalogo_{file.filename}"
     with open(temp_filename, "wb") as buffer:
-        buffer.write(await file.read())
+        buffer.write(file.file.read())
         
     mapa_manual = {
         "tit": col_tit if col_tit else None, "sku": col_sku if col_sku else None,
@@ -2147,7 +2275,7 @@ async def generar_catalogo_endpoint(
     total_filas = len(filas_rango)
     
     for indice, p in enumerate(filas_rango):
-        await asyncio.sleep(0.01)
+        time.sleep(0.01)
         porcentaje_actual = int(30 + ((indice + 1) / max(1, total_filas)) * 60)
         actualizar_progreso(porcentaje_actual, f"[{indice+1}/{total_filas}] Vinculando fotos e info: {p.get('Titulo', '')[:20]}...")
 
@@ -2170,8 +2298,6 @@ async def generar_catalogo_endpoint(
 
     actualizar_progreso(95, "Ensamblando diseño del catálogo HTML...")
 
-    # PREVENCIÓN LINK WHATSAPP (Evitar que el UI de chat lo dañe)
-    base_ws = "https" + "://" + "wa.me/"
     num_telefono = "".join(filter(str.isdigit, whatsapp))
     if not num_telefono.startswith("58"):
         num_telefono = "58" + num_telefono.lstrip("0")
@@ -2212,7 +2338,7 @@ async def generar_catalogo_endpoint(
             .price {{ font-size: 24px; font-weight: 900; color: #16a34a; text-align: center; }}
             
             .btn-group {{ display: flex; flex-direction: column; gap: 8px; }}
-            .btn {{ text-decoration: none; padding: 12px; border-radius: 8px; font-weight: 800; font-size: 13px; text-align: center; transition: 0.2s; text-transform: uppercase; letter-spacing: 0.5px; }}
+            .btn {{ text-decoration: none; padding: 12px; border-radius: 8px; font-weight: 800; font-size: 13px; text-align: center; transition: 0.2s; text-transform: uppercase; letter-spacing: 0.5px; display: block; }}
             .btn-ws {{ background: #25D366; color: white; }}
             .btn-ws:hover {{ background: #1da851; box-shadow: 0 4px 12px rgba(37,211,102,0.2); }}
             .btn-ml {{ background: #ffe600; color: #2d3277; border: 1px solid #facc15; }}
@@ -2223,7 +2349,7 @@ async def generar_catalogo_endpoint(
             @media print {{
                 .btn-group {{ display: none !important; }}
                 body {{ background: white; }}
-                .card {{ break-inside: avoid; box-shadow: none; border: 1px solid #e2e8f0; }}
+                .card {{ break-inside: avoid; box-shadow: none; border: 1px solid #e2e8f0; margin-bottom: 15px; }}
                 .grid {{ grid-template-columns: repeat(3, 1fr); gap: 15px; }}
                 .category-title {{ margin-top: 20px; }}
                 .price-wrap {{ padding: 10px; background: transparent; border: none; border-top: 1px solid #e2e8f0; border-radius: 0; }}
@@ -2254,7 +2380,7 @@ async def generar_catalogo_endpoint(
             img_html = f'<img src="{img_b64}">' if img_b64 else '<div class="no-img">Imagen No Disponible</div>'
 
             msg_ws = f"Hola {nombre_empresa}, me interesa el producto:\n*{titulo}*\n(SKU: {sku})\nPrecio: ${precio}\n¿Tienen disponibilidad?"
-            link_ws = f"{base_ws}{num_telefono}?text={urllib.parse.quote(msg_ws)}"
+            link_ws = f"{API_WA}/{num_telefono}?text={urllib.parse.quote(msg_ws)}"
 
             link_ml = enlaces_ml.get(titulo.lower())
             ml_btn_html = f'<a href="{link_ml}" target="_blank" class="btn btn-ml">🛍️ Comprar en ML</a>' if link_ml else ""
