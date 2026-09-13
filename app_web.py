@@ -7,6 +7,8 @@ import pandas as pd
 import re
 import time
 import asyncio
+import urllib.parse
+from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
@@ -26,6 +28,9 @@ app = FastAPI(title="ERP Mercado Libre - Dashboard Definitivo")
 
 CARPETA_LOTE_IMAGENES = "lote_imagenes"
 os.makedirs(CARPETA_LOTE_IMAGENES, exist_ok=True)
+
+CARPETA_CATALOGOS = "catalogos_generados"
+os.makedirs(CARPETA_CATALOGOS, exist_ok=True)
 
 try:
     from google import genai
@@ -61,8 +66,8 @@ Por Favor Verifique la disponibilidad antes de ofertar
 - Enviamos a todo el País.
 **************************************************************************************************
 COMENTARIOS:
-- Realice todas las preguntas necesariasAntes de ofertar.
-- El equipo de ventas de está a tu disposición para responder tus consultas.
+- Realice todas las preguntas necesarias Antes de ofertar.
+- El equipo de ventas está a tu disposición para responder tus consultas.
 - Te invitamos a que solo ofertes cuando estés seguro de realizar la compra.
 - La disponibilidad y precio del producto publicado solo se garantiza por un lapso de 24hrs luego de haber solicitado la compra.
 - Si presentas algún inconveniente durante el proceso de compras estaremos a tu completa disposición para atenderte y solventar la situación. Deseamos que tu compra con nosotros siempre genere una calificación positiva.
@@ -100,7 +105,7 @@ def emparejar_imagen_local(modelo, sku, titulo):
                             mime = "image/jpeg" if ext in [".JPG", ".JPEG"] else f"image/{ext[1:].lower()}"
                             return f"data:{mime};base64,{data}"
                     except Exception as e:
-                        print(f"Error cargando foto local exacta {arc}: {e}")
+                        print(f"Error cargando foto exacta {arc}: {e}")
 
     def limpiar_texto(t):
         return re.sub(r'[\s\-_\.]+', '', str(t)).lower()
@@ -120,7 +125,7 @@ def emparejar_imagen_local(modelo, sku, titulo):
                     mime = "image/jpeg" if ext in ["jpg", "jpeg"] else f"image/{ext}"
                     return f"data:{mime};base64,{data}"
             except Exception as e:
-                print(f"Error cargando foto local flexible {arc}: {e}")
+                print(f"Error cargando foto flexible {arc}: {e}")
     return None
 
 def subir_foto_a_ml(base64_data, token):
@@ -158,7 +163,6 @@ def construir_atributos_dinamicos_dict(prod, attr_adicionales, headers):
         {"id": "BRAND", "value_name": prod.get("Marca", "Generico")},
         {"id": "MODEL", "value_name": prod.get("Modelo", "Universal")}
     ]
-
     sku = str(prod.get("SKU", "")).strip()
     if sku and sku.lower() != "nan":
         lista.append({"id": "SELLER_SKU", "value_name": sku})
@@ -176,8 +180,36 @@ def construir_atributos_dinamicos_dict(prod, attr_adicionales, headers):
             k_id_upper = str(k_id).strip().upper()
             if k_id_upper not in PROHIBIDOS and str(v_val).strip() != "":
                 lista.append({"id": k_id_upper, "value_name": str(v_val).strip()})
-
     return lista
+
+def obtener_diccionario_publicados_ml(headers):
+    """Obtiene un diccionario {titulo_minuscula: permalink_url} de la cuenta."""
+    try:
+        url_me = "https://" + "api.mercadolibre.com/users/me"
+        res_me = requests.get(url_me, headers=headers)
+        if res_me.status_code != 200: return {}
+        user_id = res_me.json().get("id")
+
+        url_search = "https://" + f"api.mercadolibre.com/users/{user_id}/items/search"
+        res_items = requests.get(url_search, headers=headers)
+        item_ids = res_items.json().get("results", [])
+        
+        diccionario = {}
+        if item_ids:
+            for i in range(0, len(item_ids), 50):
+                ids_str = ",".join(item_ids[i:i+50]) 
+                url_items = "https://" + f"api.mercadolibre.com/items?ids={ids_str}"
+                res_detalles = requests.get(url_items, headers=headers)
+                for item in res_detalles.json():
+                    if item.get("code") == 200:
+                        body = item.get("body", {})
+                        title = body.get("title", "").strip().lower()
+                        permalink = body.get("permalink", "")
+                        if title and permalink:
+                            diccionario[title] = permalink
+        return diccionario
+    except Exception:
+        return {}
 
 HTML_INTERFACE = """
 <!DOCTYPE html>
@@ -309,6 +341,9 @@ HTML_INTERFACE = """
             <li class="nav-item" onclick="mostrarSeccion('tab-galeria', this); cargarGaleriaLocal();">
                 <span>🖼️</span> <span class="nav-text">Galería Local (lote_imagenes)</span>
             </li>
+            <li class="nav-item" onclick="mostrarSeccion('tab-catalogo', this)">
+                <span>📑</span> <span class="nav-text">Generar Catálogo</span>
+            </li>
         </ul>
     </div>
 
@@ -356,7 +391,7 @@ HTML_INTERFACE = """
                 </div>
 
                 <div style="margin-bottom: 25px;">
-                    <button onclick="abrirModalCategorias()" style="width: 100%; padding: 14px; font-size: 15px; background: #0284c7;">
+                    <button onclick="abrirModalCategorias()" style="width: 100%; padding: 14px; font-size: 15px; background: #0284c7; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">
                         🔍 Sincronizar y Elegir Categoría Oficial ML
                     </button>
                 </div>
@@ -434,7 +469,7 @@ HTML_INTERFACE = """
                         </thead>
                         <tbody id="tabla-body"></tbody>
                     </table>
-                    <button onclick="ejecutarPublicacion()" style="background: #16a34a; width: 100%; margin-top: 25px; padding: 16px; font-size: 16px; font-weight:800;">
+                    <button onclick="ejecutarPublicacion()" style="background: #16a34a; width: 100%; margin-top: 25px; padding: 16px; font-size: 16px; font-weight:800; color: white; border: none; border-radius: 8px; cursor: pointer;">
                         🚀 Confirmar y Publicar Lote (Inteligente: Salta lo repetido)
                     </button>
                 </div>
@@ -448,7 +483,7 @@ HTML_INTERFACE = """
             <div class="container">
                 <h1>🔑 Estado y Diagnóstico en Vivo de Cuentas</h1>
                 <div class="subtitle">Prueba la conexión y la renovación automática de tokens sin salir de tu panel</div>
-                <button onclick="verificarTokens()" style="padding: 12px 25px; font-size: 15px;">🔄 Probar Conexión y Renovar Tokens Ahora</button>
+                <button onclick="verificarTokens()" style="padding: 12px 25px; font-size: 15px; background: #0284c7; color: white; border: none; border-radius: 8px; cursor: pointer;">🔄 Probar Conexión y Renovar Tokens Ahora</button>
                 <div id="log-tokens" class="log-box" style="height: 350px;">Presiona el botón para verificar la salud de los tokens...</div>
             </div>
         </div>
@@ -479,11 +514,109 @@ HTML_INTERFACE = """
                         <h1 style="margin:0;">🖼️ Galería Local de Imágenes (Carpeta: lote_imagenes)</h1>
                         <div class="subtitle" style="margin-bottom:0;">Verifica visualmente en tiempo real todas las fotos que el sistema tiene listas para emparejar</div>
                     </div>
-                    <button onclick="cargarGaleriaLocal()" style="background:#0284c7; padding:10px 18px;">🔄 Actualizar Galería</button>
+                    <button onclick="cargarGaleriaLocal()" style="background:#0284c7; padding:10px 18px; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">🔄 Actualizar Galería</button>
                 </div>
                 <div id="galeria-contenedor" class="gallery-grid"></div>
             </div>
         </div>
+
+        <!-- PESTAÑA 5: CATÁLOGO DIGITAL -->
+        <div id="tab-catalogo" class="section-view">
+            <div class="container">
+                <h1>📑 Generador de Catálogo Digital Premium</h1>
+                <div class="subtitle">Escanea tu Excel, valida inventario y genera un catálogo agrupado por categorías de Mercado Libre con links directos de compra (WhatsApp y ML).</div>
+                
+                <div class="steps-grid">
+                    <div class="step-card">
+                        <span class="step-num">Paso 1</span>
+                        <label>Cuenta ML (Para link de compra directa):</label>
+                        <select id="cat-cuenta"></select>
+                    </div>
+                    <div class="step-card">
+                        <span class="step-num">Paso 2</span>
+                        <label>Archivo Excel Maestro:</label>
+                        <input type="file" id="cat-file" accept=".xlsx, .csv" onchange="detectarHojasCat(this)">
+                    </div>
+                    <div class="step-card">
+                        <span class="step-num">Paso 3</span>
+                        <label>Hoja a Escanear:</label>
+                        <select id="cat-hoja-select" onchange="cambiarHojaSeleccionadaCat()">
+                            <option value="TODAS">📚 Todo el Libro (Todas las Hojas)</option>
+                        </select>
+                    </div>
+                    <div class="step-card">
+                        <span class="step-num">Paso 4</span>
+                        <label>Rango de filas:</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="number" id="cat-rango-inicio" value="1" placeholder="Desde" style="width: 50%;">
+                            <input type="number" id="cat-rango-fin" value="100" placeholder="Hasta" style="width: 50%;">
+                        </div>
+                    </div>
+                    <div class="step-card" style="grid-column: span 2;">
+                        <span class="step-num">Datos de Empresa</span>
+                        <div style="display: flex; gap: 8px;">
+                            <div style="width: 50%;">
+                                <label>Nombre de Empresa:</label>
+                                <input type="text" id="cat-empresa" placeholder="Ej: Mi Tienda C.A.">
+                            </div>
+                            <div style="width: 50%;">
+                                <label>WhatsApp de Ventas:</label>
+                                <input type="text" id="cat-ws" placeholder="Ej: 04141234567">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- MAPEO MANUAL CATALOGO -->
+                <div id="cat-mapping-bar" class="mapping-bar">
+                    <h4 style="margin: 0 0 5px 0; color: #0369a1; font-size: 15px; font-weight: 800;">🎯 Validar Columnas del Catálogo:</h4>
+                    <span style="font-size: 13px; color: #0284c7; font-weight: 600;">Asegúrate de que el sistema identifique correctamente el título, SKU y precio para el catálogo.</span>
+                    <div class="mapping-grid">
+                        <div><label>Título:</label><select id="cat-map-tit"><option value="">-- Automático --</option></select></div>
+                        <div><label>SKU / Código:</label><select id="cat-map-sku"><option value="">-- Automático --</option></select></div>
+                        <div><label>Modelo:</label><select id="cat-map-mod"><option value="">-- Automático --</option></select></div>
+                        <div><label>Precio:</label><select id="cat-map-pre"><option value="">-- Automático --</option></select></div>
+                        <div><label>Stock (Opcional):</label><select id="cat-map-stk"><option value="">-- Automático --</option></select></div>
+                    </div>
+
+                    <div class="excel-preview-box">
+                        <div class="excel-preview-header">
+                            <span id="cat-excel-preview-title">📊 Vista Previa de Datos a Exportar</span>
+                            <div id="cat-excel-preview-nav" class="excel-preview-nav" style="display:none;">
+                                <button type="button" class="excel-nav-btn" onclick="cambiarHojaPreviewCat(-1)">⬅️ Anterior</button>
+                                <span id="cat-excel-preview-counter" style="color:#0f172a; font-weight:bold;">Hoja 1 de 1</span>
+                                <button type="button" class="excel-nav-btn" onclick="cambiarHojaPreviewCat(1)">Siguiente ➡️</button>
+                            </div>
+                        </div>
+                        <div style="overflow-x: auto; max-height: 250px;">
+                            <table class="excel-table-preview" id="cat-excel-preview-table">
+                                <thead id="cat-excel-preview-thead"></thead>
+                                <tbody id="cat-excel-preview-tbody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="cat-loader-zona" class="loader-container">
+                    <div class="spinner-wrapper">
+                        <div class="spinner-circle"></div>
+                        <div id="cat-spinner-percentage" class="spinner-percentage">0%</div>
+                    </div>
+                    <div id="cat-loader-mensaje" style="font-weight:800; color:#0f172a; font-size:16px;">Analizando inventario y cargando fotos...</div>
+                </div>
+
+                <button onclick="generarCatalogoERP(event)" style="background: #8b5cf6; width: 100%; margin-top: 10px; padding: 16px; font-size: 16px; font-weight:800; color:white; border:none; border-radius:8px; cursor:pointer;">
+                    🪄 Generar Catálogo Oficial HTML
+                </button>
+
+                <div id="cat-resultado" class="log-box" style="display:none; text-align:center; padding:30px; height: auto;">
+                    <h2 style="color:#4ade80; margin:0;">✅ ¡Catálogo Generado Exitosamente!</h2>
+                    <p style="color:#cbd5e1; margin-top:10px;">El sistema agrupó los productos por categoría de ML e integró las fotos. Listo para enviar por WhatsApp o guardar como PDF.</p>
+                    <p id="cat-ruta-txt" style="color:white; font-weight:bold; font-size:14px; background:#1e293b; padding:10px; border-radius:6px; word-break: break-all; margin-top: 15px;"></p>
+                </div>
+            </div>
+        </div>
+
     </div>
 
     <!-- MODAL EMERGENTE DE CATEGORÍAS MLV -->
@@ -496,8 +629,8 @@ HTML_INTERFACE = """
             <div id="lista-categorias-ml" class="category-grid"></div>
             <input type="hidden" id="cat-seleccionada-id" value="TODAS">
             <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:20px; border-top:1px solid #e2e8f0; padding-top:15px;">
-                <button onclick="cerrarModalCategorias()" style="background:#64748b;">Cancelar</button>
-                <button onclick="confirmarYCargarInventario()" style="background:#16a34a; padding:10px 20px;">
+                <button onclick="cerrarModalCategorias()" style="background:#64748b; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">Cancelar</button>
+                <button onclick="confirmarYCargarInventario()" style="background:#16a34a; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">
                     🚀 Confirmar y Cargar Tabla de Publicación
                 </button>
             </div>
@@ -516,8 +649,8 @@ HTML_INTERFACE = """
                 <div class="modal-field"><label>Material / Especificación:</label><input type="text" id="bm-mat" placeholder="Ej: Original"></div>
             </div>
             <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
-                <button onclick="cerrarModalMasivo()" style="background:#64748b;">Cancelar</button>
-                <button onclick="aplicarAtributosMasivos()" style="background:#7e22ce;">🚀 Aplicar a Todo el Lote</button>
+                <button onclick="cerrarModalMasivo()" style="background:#64748b; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">Cancelar</button>
+                <button onclick="aplicarAtributosMasivos()" style="background:#7e22ce; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">🚀 Aplicar a Todo el Lote</button>
             </div>
         </div>
     </div>
@@ -531,8 +664,8 @@ HTML_INTERFACE = """
                 <div style="text-align:center; padding:20px; color:#64748b;">⏳ Cargando ficha técnica de Mercado Libre...</div>
             </div>
             <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
-                <button onclick="cerrarModal()" style="background:#64748b;">Cancelar</button>
-                <button onclick="guardarAtributosModal()" style="background:#0284c7;">💾 Guardar Ficha Técnica</button>
+                <button onclick="cerrarModal()" style="background:#64748b; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">Cancelar</button>
+                <button onclick="guardarAtributosModal()" style="background:#0284c7; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">💾 Guardar Ficha Técnica</button>
             </div>
         </div>
     </div>
@@ -546,6 +679,9 @@ HTML_INTERFACE = """
         
         let datosVistaPrevia = [];
         let indiceHojaPreview = 0;
+
+        let datosVistaPreviaCat = [];
+        let indiceHojaPreviewCat = 0;
 
         function toggleSidebar() {
             document.getElementById('sidebar').classList.toggle('collapsed');
@@ -561,16 +697,26 @@ HTML_INTERFACE = """
         window.onload = async () => {
             const res = await fetch('/cuentas');
             const cuentas = await res.json();
-            const select = document.getElementById('cuenta-select');
-            select.innerHTML = "";
+            
+            const selectMaestro = document.getElementById('cuenta-select');
+            const selectCat = document.getElementById('cat-cuenta');
+            
+            selectMaestro.innerHTML = "";
+            selectCat.innerHTML = "";
+
             cuentas.forEach(c => {
-                select.innerHTML += `<option value="${c.archivo}">${c.nombre} (${c.archivo})</option>`;
+                selectMaestro.innerHTML += `<option value="${c.archivo}">${c.nombre} (${c.archivo})</option>`;
+                selectCat.innerHTML += `<option value="${c.archivo}">${c.nombre} (${c.archivo})</option>`;
             });
+            
             if (cuentas.length > 1) {
-                select.innerHTML += `<option value="TODAS" style="font-weight:bold; color:#0369a1;">🚀 PUBLICAR EN TODAS (Inteligente: Salta donde ya exista)</option>`;
+                selectMaestro.innerHTML += `<option value="TODAS" style="font-weight:bold; color:#0369a1;">🚀 PUBLICAR EN TODAS (Inteligente)</option>`;
             }
         };
 
+        // ==========================================
+        // FUNCIONES MAESTRO DE LOTES
+        // ==========================================
         async function detectarHojasYVistaPrevia(inputElement) {
             const file = inputElement.files[0];
             const selectHoja = document.getElementById('hoja-select');
@@ -589,7 +735,6 @@ HTML_INTERFACE = """
                 datosVistaPrevia.forEach(item => {
                     selectHoja.innerHTML += `<option value="${item.nombre}">📄 ${item.nombre}</option>`;
                 });
-                
                 cambiarHojaSeleccionada();
             } catch(e) {
                 selectHoja.innerHTML = '<option value="TODAS">📚 Todo el Libro (Todas las Hojas)</option>';
@@ -639,57 +784,44 @@ HTML_INTERFACE = """
 
             const f0 = vista.filas[0];
             let trH = "<tr><th>#</th>";
-            f0.forEach((cell, i) => {
-                trH += `<th>Col ${i+1}: ${cell}</th>`;
-            });
+            f0.forEach((cell, i) => { trH += `<th>Col ${i+1}: ${cell}</th>`; });
             trH += "</tr>";
             thead.innerHTML = trH;
 
             for (let r = 1; r < Math.min(10, vista.filas.length); r++) {
                 const fila = vista.filas[r];
                 let trB = `<tr><td><b>Fila ${r}</b></td>`;
-                f0.forEach((_, cIdx) => {
-                    trB += `<td>${fila[cIdx] || ""}</td>`;
-                });
+                f0.forEach((_, cIdx) => { trB += `<td>${fila[cIdx] || ""}</td>`; });
                 trB += "</tr>";
                 tbody.innerHTML += trB;
             }
-
             document.getElementById('mapping-bar').style.display = 'block';
         }
 
         function poblarSelectoresMapeo(idxHoja) {
             if (!datosVistaPrevia[idxHoja] || !datosVistaPrevia[idxHoja].filas.length) return;
             const filas = datosVistaPrevia[idxHoja].filas;
-            
             const palabrasClave = ["codigo", "código", "sku", "producto", "descripcion", "descripción", "precio", "marca", "categoria", "nombre", "stock", "modelo", "linea", "garantia", "pvp", "$"];
-            
-            let mejorFila = 0;
-            let maxCoincidencias = -1;
+            let mejorFila = 0, maxCoincidencias = -1;
             
             for (let r = 0; r < Math.min(10, filas.length); r++) {
-                let coincidencias = 0;
-                let celdasLlenas = 0;
+                let coincidencias = 0, celdasLlenas = 0;
                 filas[r].forEach(celda => {
                     const txt = String(celda || "").toLowerCase().trim();
                     if (txt && txt !== "nan" && txt !== "undefined") {
                         celdasLlenas++;
-                        if (palabrasClave.some(p => txt.includes(p))) {
-                            coincidencias += 3;
-                        }
+                        if (palabrasClave.some(p => txt.includes(p))) coincidencias += 3;
                     }
                 });
                 const puntuacion = coincidencias + (celdasLlenas * 0.5);
                 if (puntuacion > maxCoincidencias && celdasLlenas >= 2) {
-                    maxCoincidencias = puntuacion;
-                    mejorFila = r;
+                    maxCoincidencias = puntuacion; mejorFila = r;
                 }
             }
 
             const fPpal = filas[mejorFila] || [];
             const fSig = (mejorFila + 1 < filas.length) ? (filas[mejorFila + 1] || []) : [];
             const totalCols = Math.max(fPpal.length, fSig.length);
-
             const selects = ['map-tit', 'map-sku', 'map-mod', 'map-pre', 'map-stk'];
             
             selects.forEach(id => {
@@ -702,27 +834,225 @@ HTML_INTERFACE = """
                     if (nom1.toLowerCase() === "nan" || nom1.toLowerCase() === "undefined") nom1 = "";
                     if (nom2.toLowerCase() === "nan" || nom2.toLowerCase() === "undefined") nom2 = "";
 
-                    let etiquetaCol = "";
-                    let valorCol = "";
+                    let etiquetaCol = "", valorCol = "";
                     if (nom1 && nom2 && palabrasClave.some(p => nom2.toLowerCase().includes(p))) {
-                        valorCol = `${nom1} ${nom2}`;
-                        etiquetaCol = `Col ${c + 1}: ${nom1} ${nom2}`;
+                        valorCol = `${nom1} ${nom2}`; etiquetaCol = `Col ${c + 1}: ${nom1} ${nom2}`;
                     } else if (nom1) {
-                        valorCol = nom1;
-                        etiquetaCol = `Col ${c + 1}: ${nom1}`;
+                        valorCol = nom1; etiquetaCol = `Col ${c + 1}: ${nom1}`;
                     } else if (nom2) {
-                        valorCol = nom2;
-                        etiquetaCol = `Col ${c + 1}: ${nom2}`;
+                        valorCol = nom2; etiquetaCol = `Col ${c + 1}: ${nom2}`;
                     } else {
-                        valorCol = `Col_${c + 1}`;
-                        etiquetaCol = `Col ${c + 1} (Sin nombre)`;
+                        valorCol = `Col_${c + 1}`; etiquetaCol = `Col ${c + 1} (Sin nombre)`;
                     }
-
                     el.innerHTML += `<option value="${valorCol}">${etiquetaCol}</option>`;
                 }
             });
         }
 
+        // ==========================================
+        // FUNCIONES CATÁLOGO (NUEVO)
+        // ==========================================
+        async function detectarHojasCat(inputElement) {
+            const file = inputElement.files[0];
+            const selectHoja = document.getElementById('cat-hoja-select');
+            if (!file) return;
+
+            selectHoja.innerHTML = '<option value="TODAS">⏳ Detectando pestañas...</option>';
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const res = await fetch('/api/vista-previa-excel', { method: 'POST', body: formData });
+                const data = await res.json();
+                
+                datosVistaPreviaCat = data.vistas || [];
+                selectHoja.innerHTML = '<option value="TODAS">📚 Todo el Libro (Todas las Hojas)</option>';
+                datosVistaPreviaCat.forEach(item => {
+                    selectHoja.innerHTML += `<option value="${item.nombre}">📄 ${item.nombre}</option>`;
+                });
+                cambiarHojaSeleccionadaCat();
+            } catch(e) {
+                selectHoja.innerHTML = '<option value="TODAS">📚 Todo el Libro (Todas las Hojas)</option>';
+            }
+        }
+
+        function cambiarHojaSeleccionadaCat() {
+            const val = document.getElementById('cat-hoja-select').value;
+            if (val === "TODAS") {
+                indiceHojaPreviewCat = 0;
+            } else {
+                const idx = datosVistaPreviaCat.findIndex(item => item.nombre === val);
+                indiceHojaPreviewCat = (idx >= 0) ? idx : 0;
+            }
+            renderizarVistaPreviaExcelCat(val === "TODAS");
+            poblarSelectoresMapeoCat(indiceHojaPreviewCat);
+        }
+
+        function cambiarHojaPreviewCat(delta) {
+            const total = datosVistaPreviaCat.length;
+            if (total === 0) return;
+            indiceHojaPreviewCat = (indiceHojaPreviewCat + delta + total) % total;
+            renderizarVistaPreviaExcelCat(true);
+            poblarSelectoresMapeoCat(indiceHojaPreviewCat);
+        }
+
+        function renderizarVistaPreviaExcelCat(esTodas) {
+            if (!datosVistaPreviaCat.length) return;
+            const vista = datosVistaPreviaCat[indiceHojaPreviewCat];
+            const thead = document.getElementById('cat-excel-preview-thead');
+            const tbody = document.getElementById('cat-excel-preview-tbody');
+            const title = document.getElementById('cat-excel-preview-title');
+            const nav = document.getElementById('cat-excel-preview-nav');
+            const count = document.getElementById('cat-excel-preview-counter');
+            
+            title.innerHTML = `📊 Vista Previa de Datos a Exportar — <b>Hoja: ${vista.nombre}</b>`;
+            if (esTodas && datosVistaPreviaCat.length > 1) {
+                nav.style.display = 'flex';
+                count.innerText = `Hoja ${indiceHojaPreviewCat + 1} de ${datosVistaPreviaCat.length}`;
+            } else {
+                nav.style.display = 'none';
+            }
+
+            thead.innerHTML = "";
+            tbody.innerHTML = "";
+            if (!vista.filas || !vista.filas.length) return;
+
+            const f0 = vista.filas[0];
+            let trH = "<tr><th>#</th>";
+            f0.forEach((cell, i) => { trH += `<th>Col ${i+1}: ${cell}</th>`; });
+            trH += "</tr>";
+            thead.innerHTML = trH;
+
+            for (let r = 1; r < Math.min(10, vista.filas.length); r++) {
+                const fila = vista.filas[r];
+                let trB = `<tr><td><b>Fila ${r}</b></td>`;
+                f0.forEach((_, cIdx) => { trB += `<td>${fila[cIdx] || ""}</td>`; });
+                trB += "</tr>";
+                tbody.innerHTML += trB;
+            }
+            document.getElementById('cat-mapping-bar').style.display = 'block';
+        }
+
+        function poblarSelectoresMapeoCat(idxHoja) {
+            if (!datosVistaPreviaCat[idxHoja] || !datosVistaPreviaCat[idxHoja].filas.length) return;
+            const filas = datosVistaPreviaCat[idxHoja].filas;
+            const palabrasClave = ["codigo", "código", "sku", "producto", "descripcion", "descripción", "precio", "marca", "categoria", "nombre", "stock", "modelo", "linea", "garantia", "pvp", "$"];
+            let mejorFila = 0, maxCoincidencias = -1;
+            
+            for (let r = 0; r < Math.min(10, filas.length); r++) {
+                let coincidencias = 0, celdasLlenas = 0;
+                filas[r].forEach(celda => {
+                    const txt = String(celda || "").toLowerCase().trim();
+                    if (txt && txt !== "nan" && txt !== "undefined") {
+                        celdasLlenas++;
+                        if (palabrasClave.some(p => txt.includes(p))) coincidencias += 3;
+                    }
+                });
+                const puntuacion = coincidencias + (celdasLlenas * 0.5);
+                if (puntuacion > maxCoincidencias && celdasLlenas >= 2) {
+                    maxCoincidencias = puntuacion; mejorFila = r;
+                }
+            }
+
+            const fPpal = filas[mejorFila] || [];
+            const fSig = (mejorFila + 1 < filas.length) ? (filas[mejorFila + 1] || []) : [];
+            const totalCols = Math.max(fPpal.length, fSig.length);
+            const selects = ['cat-map-tit', 'cat-map-sku', 'cat-map-mod', 'cat-map-pre', 'cat-map-stk'];
+            
+            selects.forEach(id => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                el.innerHTML = '<option value="">-- Automático --</option>';
+                for (let c = 0; c < totalCols; c++) {
+                    let nom1 = String(fPpal[c] || "").trim();
+                    let nom2 = String(fSig[c] || "").trim();
+                    if (nom1.toLowerCase() === "nan" || nom1.toLowerCase() === "undefined") nom1 = "";
+                    if (nom2.toLowerCase() === "nan" || nom2.toLowerCase() === "undefined") nom2 = "";
+
+                    let etiquetaCol = "", valorCol = "";
+                    if (nom1 && nom2 && palabrasClave.some(p => nom2.toLowerCase().includes(p))) {
+                        valorCol = `${nom1} ${nom2}`; etiquetaCol = `Col ${c + 1}: ${nom1} ${nom2}`;
+                    } else if (nom1) {
+                        valorCol = nom1; etiquetaCol = `Col ${c + 1}: ${nom1}`;
+                    } else if (nom2) {
+                        valorCol = nom2; etiquetaCol = `Col ${c + 1}: ${nom2}`;
+                    } else {
+                        valorCol = `Col_${c + 1}`; etiquetaCol = `Col ${c + 1} (Sin nombre)`;
+                    }
+                    el.innerHTML += `<option value="${valorCol}">${etiquetaCol}</option>`;
+                }
+            });
+        }
+
+        async function generarCatalogoERP(event) {
+            const file = document.getElementById('cat-file').files[0];
+            const empresa = document.getElementById('cat-empresa').value;
+            const ws = document.getElementById('cat-ws').value;
+
+            if (!file) return alert("Por favor sube el archivo Excel Maestro en el Paso 2.");
+            if (!ws) return alert("El número de WhatsApp es obligatorio para que funcionen los botones de compra.");
+
+            const btn = event.target;
+            const textOriginal = btn.innerHTML;
+            btn.innerHTML = '⏳ Escaneando Inventario, ML y Procesando Fotos...';
+            btn.disabled = true;
+
+            const fd = new FormData();
+            fd.append('file', file);
+            fd.append('cuenta', document.getElementById('cat-cuenta').value);
+            fd.append('hoja', document.getElementById('cat-hoja-select').value);
+            fd.append('inicio', document.getElementById('cat-rango-inicio').value);
+            fd.append('fin', document.getElementById('cat-rango-fin').value);
+            fd.append('nombre_empresa', empresa || 'Mi Empresa');
+            fd.append('whatsapp', ws);
+            
+            fd.append('col_tit', document.getElementById('cat-map-tit').value);
+            fd.append('col_sku', document.getElementById('cat-map-sku').value);
+            fd.append('col_mod', document.getElementById('cat-map-mod').value);
+            fd.append('col_pre', document.getElementById('cat-map-pre').value);
+            fd.append('col_stk', document.getElementById('cat-map-stk').value);
+
+            document.getElementById('cat-loader-zona').style.display = 'block';
+            document.getElementById('cat-spinner-percentage').innerText = "0%";
+            document.getElementById('cat-loader-mensaje').innerText = "Iniciando generación de catálogo...";
+            iniciarMonitoreoProgresoCat();
+
+            try {
+                const res = await fetch('/api/generar-catalogo', { method: 'POST', body: fd });
+                const data = await res.json();
+                
+                if (data.error) {
+                    alert("Error: " + data.error);
+                } else {
+                    document.getElementById('cat-resultado').style.display = 'block';
+                    document.getElementById('cat-ruta-txt').innerText = "📂 Localizado en: " + data.ruta;
+                }
+            } catch(e) {
+                alert("Ocurrió un error de red al generar el catálogo.");
+            } finally {
+                btn.innerHTML = textOriginal;
+                btn.disabled = false;
+                if (intervaloProgreso) clearInterval(intervaloProgreso);
+                document.getElementById('cat-loader-zona').style.display = 'none';
+            }
+        }
+
+        function iniciarMonitoreoProgresoCat() {
+            if (intervaloProgreso) clearInterval(intervaloProgreso);
+            intervaloProgreso = setInterval(async () => {
+                try {
+                    const res = await fetch('/estado-progreso');
+                    const info = await res.json();
+                    document.getElementById('cat-spinner-percentage').innerText = info.porcentaje + "%";
+                    document.getElementById('cat-loader-mensaje').innerText = info.mensaje;
+                    if (!info.activo && info.porcentaje >= 100) clearInterval(intervaloProgreso);
+                } catch(e) {}
+            }, 250);
+        }
+
+        // ==========================================
+        // UTILIDADES GENERALES
+        // ==========================================
         async function verificarTokens() {
             const consolaMain = document.getElementById('resultados');
             const consolaTokens = document.getElementById('log-tokens');
@@ -744,7 +1074,6 @@ HTML_INTERFACE = """
         function iniciarMonitoreoProgreso() {
             document.getElementById('loader-zona').style.display = 'block';
             if (intervaloProgreso) clearInterval(intervaloProgreso);
-            
             intervaloProgreso = setInterval(async () => {
                 try {
                     const res = await fetch('/estado-progreso');
@@ -802,13 +1131,8 @@ HTML_INTERFACE = """
             inputField.style.display = (selectVal === 'CUSTOM') ? 'block' : 'none';
         }
 
-        function abrirModalMasivo() {
-            document.getElementById('modal-bulk-atributos').style.display = 'flex';
-        }
-
-        function cerrarModalMasivo() {
-            document.getElementById('modal-bulk-atributos').style.display = 'none';
-        }
+        function abrirModalMasivo() { document.getElementById('modal-bulk-atributos').style.display = 'flex'; }
+        function cerrarModalMasivo() { document.getElementById('modal-bulk-atributos').style.display = 'none'; }
 
         function aplicarAtributosMasivos() {
             const marVal = document.getElementById('bm-mar').value.trim();
@@ -835,11 +1159,9 @@ HTML_INTERFACE = """
                     if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
                     atributosAdicionalesPorFila[idx]["MATERIAL"] = matVal;
                 }
-
                 actualizarResumenAtributos(idx);
                 count++;
             });
-
             cerrarModalMasivo();
             alert(`✅ Características aplicadas masivamente a ${count} artículos.`);
         }
@@ -861,7 +1183,6 @@ HTML_INTERFACE = """
         async function abrirModal(idx) {
             document.getElementById('modal-idx').value = idx;
             document.getElementById('modal-atributos').style.display = 'flex';
-            
             const contenedor = document.getElementById('modal-attr-dinamicos');
             contenedor.innerHTML = '<div style="text-align:center; padding:20px; color:#0284c7; font-weight:bold;">⏳ Consultado atributos en vivo para esta categoría en Mercado Libre...</div>';
             
@@ -876,7 +1197,7 @@ HTML_INTERFACE = """
                 contenedor.innerHTML = `
                     <div style="margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; background: #e0f2fe; padding: 12px; border-radius: 8px; border: 1px solid #7dd3fc;">
                         <span style="font-size: 13px; font-weight: 800; color: #0369a1;">🤖 Relleno Inteligente de Ficha Técnica</span>
-                        <button type="button" onclick="ejecutarAutollenadoIA(${idx})" style="background: #0284c7; font-size: 11px; padding: 6px 14px;">
+                        <button type="button" onclick="ejecutarAutollenadoIA(${idx})" style="background: #0284c7; font-size: 11px; padding: 6px 14px; color: white; border: none; border-radius: 8px; cursor: pointer;">
                             ⚡ Autollenar con IA (Gemini)
                         </button>
                     </div>
@@ -896,10 +1217,7 @@ HTML_INTERFACE = """
 
                     if (att.values && att.values.length > 0) {
                         let optionsHTML = "";
-                        att.values.forEach(valML => {
-                            optionsHTML += `<option value="${valML.name}">`;
-                        });
-
+                        att.values.forEach(valML => { optionsHTML += `<option value="${valML.name}">`; });
                         controlHTML = `
                             <input type="text" list="dl-${att.id}" id="m-txt-${att.id}" value="${vGuardado}" placeholder="Elige de la lista o escribe una opción libre...">
                             <datalist id="dl-${att.id}">
@@ -925,7 +1243,6 @@ HTML_INTERFACE = """
         async function ejecutarAutollenadoIA(idx) {
             const titVal = document.getElementById('tit-'+idx).value;
             const catId = document.getElementById('cat-'+idx).value;
-
             const formData = new FormData();
             formData.append('titulo', titVal);
             formData.append('cat_id', catId);
@@ -941,11 +1258,9 @@ HTML_INTERFACE = """
 
                 if (data.atributos) {
                     if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
-                    
                     for (const [idAttr, valIA] of Object.entries(data.atributos)) {
                         const idUpper = String(idAttr).trim ? String(idAttr).trim().toUpperCase() : String(idAttr).toUpperCase();
                         atributosAdicionalesPorFila[idx][idUpper] = valIA;
-                        
                         const inputCampo = document.getElementById(`m-txt-${idUpper}`);
                         if (inputCampo) {
                             inputCampo.value = valIA;
@@ -962,21 +1277,16 @@ HTML_INTERFACE = """
             }
         }
 
-        function cerrarModal() {
-            document.getElementById('modal-atributos').style.display = 'none';
-        }
+        function cerrarModal() { document.getElementById('modal-atributos').style.display = 'none'; }
 
         function guardarAtributosModal() {
             const idx = document.getElementById('modal-idx').value;
-            
             atributosPorFila[idx].marca = document.getElementById('m-mar').value;
             atributosPorFila[idx].modelo = document.getElementById('m-mod').value;
-            
             document.getElementById('mar-'+idx).value = atributosPorFila[idx].marca;
             document.getElementById('mod-'+idx).value = atributosPorFila[idx].modelo;
 
             if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
-            
             const contenedor = document.getElementById('modal-attr-dinamicos');
             contenedor.querySelectorAll('input[id^="m-txt-"]').forEach(inp => {
                 const idAttrML = inp.id.replace('m-txt-', '').toUpperCase();
@@ -1005,7 +1315,6 @@ HTML_INTERFACE = """
         function procesarArchivos(inputElement, idx) {
             const files = inputElement.files;
             if (!imagenesPorFila[idx]) imagenesPorFila[idx] = [];
-
             for (let file of files) {
                 if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
                     alert(`El archivo ${file.name} no es válido. Solo JPG, PNG o WEBP.`);
@@ -1043,19 +1352,9 @@ HTML_INTERFACE = """
             }
         }
         
-        function applyingExpo() {
-            const expoVal = document.getElementById('bulk-exposicion').value;
-            document.querySelectorAll('.select-exposicion').forEach(sel => sel.value = expoVal);
-        }
-
         function aplicarExposicionMasiva() {
             const expoVal = document.getElementById('bulk-exposicion').value;
             document.querySelectorAll('.select-exposicion').forEach(sel => sel.value = expoVal);
-        }
-
-        function applyingEnv() {
-            const envioVal = document.getElementById('bulk-envio').value;
-            document.querySelectorAll('.select-envio').forEach(sel => sel.value = envioVal);
         }
 
         function aplicarEnvioMasivo() {
@@ -1209,7 +1508,7 @@ HTML_INTERFACE = """
                                     <option value="OMITIR" ${selectOmit}>Este producto no posee código</option>
                                 </select>
                                 <input type="text" id="gtin-${idx}" value="${prod.GTIN !== 'N/A' ? prod.GTIN : ''}" style="display:${gtinDisplay}; margin-bottom:4px;">
-                                <button onclick="abrirModal(${idx})" style="background:#0284c7; width:100%; padding:4px; font-size:11px;">🛠️ Ver / Editar + Características Oficiales MLV</button>
+                                <button onclick="abrirModal(${idx})" style="background:#0284c7; width:100%; padding:4px; font-size:11px; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">🛠️ Ver / Editar + Características Oficiales MLV</button>
                                 <div id="resumen-attr-${idx}" class="attr-summary">${resumenInit}</div>
                             </td>
                             <td>
@@ -1317,6 +1616,7 @@ HTML_INTERFACE = """
                 setTimeout(() => { document.getElementById('loader-zona').style.display = 'none'; }, 500);
             }
         }
+
     </script>
 </body>
 </html>
@@ -1506,8 +1806,8 @@ def verificar_tokens_endpoint():
             token = datos.get("access_token")
             headers = {"Authorization": f"Bearer {token}"}
             
-            # URL limpia de texto plano:
-            url_me = "https://api.mercadolibre.com/users/me"
+            # URL separada matemáticamente para evitar que el portapapeles la rompa
+            url_me = "https://" + "api.mercadolibre.com/users/me"
             res = requests.get(url_me, headers=headers)
             
             if res.status_code == 200:
@@ -1736,7 +2036,8 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                 datos_publicacion["pictures"] = fotos_payload
 
             try:
-                respuesta = requests.post("https://api.mercadolibre.com/items", headers=headers, json=datos_publicacion, timeout=12)
+                url_items = "[https://api.mercadolibre.com/items](https://api.mercadolibre.com/items)"
+                respuesta = requests.post(url_items, headers=headers, json=datos_publicacion, timeout=12)
                 
                 if respuesta.status_code == 201:
                     item_data = respuesta.json()
@@ -1745,7 +2046,7 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                     
                     await asyncio.sleep(0.5)
                     try:
-                        url_desc = f"https://api.mercadolibre.com/items/{item_id}/description"
+                        url_desc = f"[https://api.mercadolibre.com/items/](https://api.mercadolibre.com/items/){item_id}/description"
                         res_desc = requests.post(url_desc, headers=headers, json=payload_desc, timeout=10)
                         if res_desc.status_code not in [200, 201]:
                             requests.put(url_desc, headers=headers, json=payload_desc, timeout=10)
@@ -1753,7 +2054,7 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                         print(f"Aviso - Descripción no subida a {item_id}: {e_desc}")
 
                     try:
-                        url_put = f"https://api.mercadolibre.com/items/{item_id}"
+                        url_put = f"[https://api.mercadolibre.com/items/](https://api.mercadolibre.com/items/){item_id}"
                         requests.put(url_put, headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=10)
                     except Exception:
                         pass
@@ -1764,7 +2065,7 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                     if "restrictions_coliving" in error_texto:
                         titulo_mascarado = re.sub(r'(?i)\b(canon|hp|epson|brother|samsung|apple|sony)\b', 'Compatible', titulo_original)
                         datos_publicacion["title"] = titulo_mascarado
-                        res_bypass = requests.post("https://api.mercadolibre.com/items", headers=headers, json=datos_publicacion, timeout=12)
+                        res_bypass = requests.post("[https://api.mercadolibre.com/items](https://api.mercadolibre.com/items)", headers=headers, json=datos_publicacion, timeout=12)
                         if res_bypass.status_code == 201:
                             item_data = res_bypass.json()
                             item_id = item_data.get('id')
@@ -1772,14 +2073,14 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                             
                             await asyncio.sleep(0.5)
                             try:
-                                url_desc = f"https://api.mercadolibre.com/items/{item_id}/description"
+                                url_desc = f"[https://api.mercadolibre.com/items/](https://api.mercadolibre.com/items/){item_id}/description"
                                 res_desc = requests.post(url_desc, headers=headers, json=payload_desc, timeout=10)
                                 if res_desc.status_code not in [200, 201]:
                                     requests.put(url_desc, headers=headers, json=payload_desc, timeout=10)
                             except Exception:
                                 pass
 
-                            url_put = f"https://api.mercadolibre.com/items/{item_id}"
+                            url_put = f"[https://api.mercadolibre.com/items/](https://api.mercadolibre.com/items/){item_id}"
                             requests.put(url_put, headers=headers, json={"title": titulo_original}, timeout=10)
                             requests.put(url_put, headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=10)
                             logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO (Bypass Catálogo)! -> {permalink}")
@@ -1795,3 +2096,215 @@ async def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
     actualizar_progreso(100, "¡Lote Completado!")
     PROGRESO_ACTUAL["activo"] = False
     return {"detalles": logs_totales}
+
+@app.post("/api/generar-catalogo")
+async def generar_catalogo_endpoint(
+    file: UploadFile = File(...),
+    cuenta: str = Form(...),
+    hoja: str = Form("TODAS"),
+    inicio: int = Form(1),
+    fin: int = Form(100),
+    whatsapp: str = Form(...),
+    nombre_empresa: str = Form("Mi Empresa"),
+    col_tit: str = Form(""),
+    col_sku: str = Form(""),
+    col_mod: str = Form(""),
+    col_pre: str = Form(""),
+    col_stk: str = Form("")
+):
+    actualizar_progreso(10, "Cargando Excel...")
+    temp_filename = f"temp_catalogo_{file.filename}"
+    with open(temp_filename, "wb") as buffer:
+        buffer.write(await file.read())
+        
+    mapa_manual = {
+        "tit": col_tit if col_tit else None, "sku": col_sku if col_sku else None,
+        "mod": col_mod if col_mod else None, "pre": col_pre if col_pre else None,
+        "stk": col_stk if col_stk else None
+    }
+
+    try:
+        filas_procesadas = procesar_excel_heuristico(temp_filename, hoja_objetivo=hoja, mapa_manual=mapa_manual)
+    except Exception as e:
+        if os.path.exists(temp_filename): os.remove(temp_filename)
+        return {"error": f"Error leyendo Excel: {str(e)}"}
+    
+    if os.path.exists(temp_filename): os.remove(temp_filename)
+
+    idx_inicio = max(0, inicio - 1)
+    filas_rango = filas_procesadas[idx_inicio:fin]
+    
+    actualizar_progreso(30, f"Consultando productos de la cuenta en Mercado Libre...")
+    token = obtener_token(cuenta)
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"} if token else {}
+    enlaces_ml = obtener_diccionario_publicados_ml(headers) if token else {}
+
+    token_ref = obtener_token(listar_archivos_token()[0]) if listar_archivos_token() else None
+    headers_ref = {"Authorization": f"Bearer {token_ref}", "Content-Type": "application/json"} if token_ref else {}
+    cache_cat = {}
+
+    productos_por_categoria = {}
+    total_filas = len(filas_rango)
+    
+    for indice, p in enumerate(filas_rango):
+        await asyncio.sleep(0.01)
+        porcentaje_actual = int(30 + ((indice + 1) / max(1, total_filas)) * 60)
+        actualizar_progreso(porcentaje_actual, f"[{indice+1}/{total_filas}] Vinculando fotos e info: {p.get('Titulo', '')[:20]}...")
+
+        titulo = str(p.get("Titulo", "")).strip()
+        if not titulo or titulo.lower() == "nan": continue
+
+        if titulo in cache_cat:
+            cat_nombre = cache_cat[titulo]
+        else:
+            if headers_ref:
+                _, cat_nombre = adivinar_categoria_y_raiz(titulo, headers_ref)
+            else:
+                cat_nombre = "Categoría General"
+            cache_cat[titulo] = cat_nombre
+
+        if cat_nombre not in productos_por_categoria:
+            productos_por_categoria[cat_nombre] = []
+        
+        productos_por_categoria[cat_nombre].append(p)
+
+    actualizar_progreso(95, "Ensamblando diseño del catálogo HTML...")
+
+    # PREVENCIÓN LINK WHATSAPP (Evitar que el UI de chat lo dañe)
+    base_ws = "https" + "://" + "wa.me/"
+    num_telefono = "".join(filter(str.isdigit, whatsapp))
+    if not num_telefono.startswith("58"):
+        num_telefono = "58" + num_telefono.lstrip("0")
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Catálogo Oficial - {nombre_empresa}</title>
+        <style>
+            :root {{ --primary: #0f172a; --accent: #0284c7; --bg: #f8fafc; --text: #334155; }}
+            body {{ font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; }}
+            header {{ background: var(--primary); color: white; padding: 40px 20px; text-align: center; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border-bottom: 5px solid var(--accent); }}
+            header h1 {{ margin: 0; font-size: 38px; font-weight: 900; letter-spacing: -0.5px; }}
+            header p {{ margin: 10px 0 0 0; color: #cbd5e1; font-size: 16px; font-weight: 500; }}
+            .container {{ max-width: 1250px; margin: 40px auto; padding: 0 20px; }}
+            
+            .category-title {{ border-bottom: 3px solid #e2e8f0; padding-bottom: 10px; margin: 50px 0 25px 0; color: var(--primary); font-size: 24px; font-weight: 800; display: flex; align-items: center; gap: 10px; }}
+            
+            .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 30px; }}
+            .card {{ background: white; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; transition: all 0.3s ease; display: flex; flex-direction: column; position: relative; }}
+            .card:hover {{ transform: translateY(-8px); box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1); border-color: #bae6fd; }}
+            
+            .stock-badge {{ position: absolute; top: 15px; right: 15px; background: rgba(15, 23, 42, 0.85); color: white; padding: 6px 12px; border-radius: 20px; font-size: 11px; font-weight: 800; backdrop-filter: blur(4px); z-index: 10; border: 1px solid rgba(255,255,255,0.2); }}
+            
+            .img-container {{ height: 240px; background: #ffffff; display: flex; justify-content: center; align-items: center; overflow: hidden; position: relative; border-bottom: 1px solid #f1f5f9; padding: 20px; }}
+            .img-container img {{ max-width: 100%; max-height: 100%; object-fit: contain; transition: transform 0.3s ease; }}
+            .card:hover .img-container img {{ transform: scale(1.05); }}
+            .no-img {{ color: #cbd5e1; font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; padding: 40px; border: 2px dashed #e2e8f0; border-radius: 12px; }}
+            
+            .card-body {{ padding: 25px; flex-grow: 1; display: flex; flex-direction: column; }}
+            .sku-badge {{ font-size: 11px; font-weight: 800; background: #e0f2fe; color: #0369a1; padding: 5px 10px; border-radius: 6px; display: inline-block; margin-bottom: 12px; width: fit-content; text-transform: uppercase; letter-spacing: 0.5px; }}
+            .title {{ font-size: 17px; font-weight: 800; color: var(--primary); margin: 0 0 15px 0; line-height: 1.4; }}
+            
+            .price-wrap {{ background: #f8fafc; padding: 15px; border-radius: 10px; margin-top: auto; border: 1px solid #e2e8f0; display: flex; flex-direction: column; gap: 12px; }}
+            .price {{ font-size: 24px; font-weight: 900; color: #16a34a; text-align: center; }}
+            
+            .btn-group {{ display: flex; flex-direction: column; gap: 8px; }}
+            .btn {{ text-decoration: none; padding: 12px; border-radius: 8px; font-weight: 800; font-size: 13px; text-align: center; transition: 0.2s; text-transform: uppercase; letter-spacing: 0.5px; }}
+            .btn-ws {{ background: #25D366; color: white; }}
+            .btn-ws:hover {{ background: #1da851; box-shadow: 0 4px 12px rgba(37,211,102,0.2); }}
+            .btn-ml {{ background: #ffe600; color: #2d3277; border: 1px solid #facc15; }}
+            .btn-ml:hover {{ background: #facc15; box-shadow: 0 4px 12px rgba(255,230,0,0.3); }}
+            
+            footer {{ text-align: center; padding: 40px 20px; color: #94a3b8; font-size: 14px; margin-top: 60px; background: white; border-top: 1px solid #e2e8f0; }}
+            
+            @media print {{
+                .btn-group {{ display: none !important; }}
+                body {{ background: white; }}
+                .card {{ break-inside: avoid; box-shadow: none; border: 1px solid #e2e8f0; }}
+                .grid {{ grid-template-columns: repeat(3, 1fr); gap: 15px; }}
+                .category-title {{ margin-top: 20px; }}
+                .price-wrap {{ padding: 10px; background: transparent; border: none; border-top: 1px solid #e2e8f0; border-radius: 0; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <header>
+            <h1>{nombre_empresa}</h1>
+            <p>Catálogo Oficial Autorizado | Actualizado: {datetime.now().strftime('%d/%m/%Y')}</p>
+        </header>
+        <div class="container">
+    """
+
+    productos_validos = 0
+
+    for cat_nombre, items in productos_por_categoria.items():
+        html_content += f'<h2 class="category-title">📂 {cat_nombre}</h2>\n<div class="grid">\n'
+        
+        for p in items:
+            titulo = str(p.get("Titulo", "")).strip()
+            precio = p.get("Precio", 0)
+            sku = str(p.get("SKU", "N/A")).strip()
+            stock = p.get("Stock", 0)
+            modelo = str(p.get("Modelo", "Universal")).strip()
+            
+            img_b64 = emparejar_imagen_local(modelo, sku, titulo)
+            img_html = f'<img src="{img_b64}">' if img_b64 else '<div class="no-img">Imagen No Disponible</div>'
+
+            msg_ws = f"Hola {nombre_empresa}, me interesa el producto:\n*{titulo}*\n(SKU: {sku})\nPrecio: ${precio}\n¿Tienen disponibilidad?"
+            link_ws = f"{base_ws}{num_telefono}?text={urllib.parse.quote(msg_ws)}"
+
+            link_ml = enlaces_ml.get(titulo.lower())
+            ml_btn_html = f'<a href="{link_ml}" target="_blank" class="btn btn-ml">🛍️ Comprar en ML</a>' if link_ml else ""
+
+            html_content += f"""
+                    <div class="card">
+                        <div class="stock-badge">Stock: {stock} u.</div>
+                        <div class="img-container">
+                            {img_html}
+                        </div>
+                        <div class="card-body">
+                            <span class="sku-badge">SKU: {sku}</span>
+                            <h3 class="title">{titulo}</h3>
+                            
+                            <div class="price-wrap">
+                                <div class="price">${float(precio):.2f}</div>
+                                <div class="btn-group">
+                                    <a href="{link_ws}" target="_blank" class="btn btn-ws">💬 WhatsApp</a>
+                                    {ml_btn_html}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+            """
+            productos_validos += 1
+        html_content += '</div>\n'
+
+    html_content += """
+        </div>
+        <footer>
+            Generado automáticamente por el motor ERP &copy; 2026
+        </footer>
+    </body>
+    </html>
+    """
+
+    actualizar_progreso(100, "¡Catálogo generado!")
+    PROGRESO_ACTUAL["activo"] = False
+
+    if productos_validos == 0:
+        return {"error": "No se detectaron productos válidos en el rango seleccionado."}
+
+    nombre_archivo = f"Catalogo_{nombre_empresa.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+    ruta_guardado = os.path.join(CARPETA_CATALOGOS, nombre_archivo)
+    
+    with open(ruta_guardado, "w", encoding="utf-8") as f:
+        f.write(html_content)
+
+    return {
+        "success": True, 
+        "mensaje": f"Se generó el catálogo con {productos_validos} productos.",
+        "ruta": ruta_guardado
+    }
