@@ -13,6 +13,14 @@ from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, FileResponse
 from dotenv import load_dotenv
 
+# Importar Pillow para validar el tamaño mínimo de 500x500px exigido por ML
+try:
+    from PIL import Image
+    import io
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
+
 from token_manager import (
     listar_archivos_token, obtener_nombre_cuenta,
     obtener_token, obtener_titulos_publicados, renovar_y_guardar_token
@@ -26,9 +34,6 @@ from excel_parser import procesar_excel_heuristico, obtener_encabezados_excel, o
 load_dotenv()
 app = FastAPI(title="ERP Mercado Libre - Dashboard Definitivo")
 
-# =================================================================
-# BLINDAJE ANTI-PORTAPAPELES (EVITA ENLACES ROTOS MARKDOWN)
-# =================================================================
 DOM_ML = "mercado" + "libre.com"
 API_ML = f"https://api.{DOM_ML}"
 DOM_WA = "wa" + ".me"
@@ -42,6 +47,8 @@ os.makedirs(CARPETA_CATALOGOS, exist_ok=True)
 
 CARPETA_REPORTES = "reportes"
 os.makedirs(CARPETA_REPORTES, exist_ok=True)
+
+ARCHIVO_MEMORIA = "memoria_erp.json"
 
 PROGRESO_ACTUAL = {
     "porcentaje": 0,
@@ -75,6 +82,26 @@ De Lunes A Viernes
 De 8:30am A 5:30pm
 """
 
+def cargar_memoria():
+    if os.path.exists(ARCHIVO_MEMORIA):
+        try:
+            with open(ARCHIVO_MEMORIA, "r") as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+def guardar_en_memoria(cuenta, titulo, sku):
+    mem = cargar_memoria()
+    if cuenta not in mem:
+        mem[cuenta] = {'titulos': [], 'skus': []}
+    if titulo and titulo not in mem[cuenta]['titulos']:
+        mem[cuenta]['titulos'].append(titulo)
+    if sku and sku not in mem[cuenta]['skus']:
+        mem[cuenta]['skus'].append(sku)
+    with open(ARCHIVO_MEMORIA, "w") as f:
+        json.dump(mem, f)
+
 def actualizar_progreso(porcentaje: int, mensaje: str):
     PROGRESO_ACTUAL["porcentaje"] = porcentaje
     PROGRESO_ACTUAL["mensaje"] = mensaje
@@ -82,48 +109,56 @@ def actualizar_progreso(porcentaje: int, mensaje: str):
 
 def emparejar_imagen_local(modelo, sku, titulo):
     if not os.path.exists(CARPETA_LOTE_IMAGENES):
-        return None
+        return None, None
     archivos = os.listdir(CARPETA_LOTE_IMAGENES)
     if not archivos:
-        return None
+        return None, None
 
-    for val in [str(sku).strip(), str(modelo).strip()]:
-        if not val or val.lower() in ["nan", "universal", "generico", ""]:
-            continue
-        nombre_exacto = re.sub(r'[\\/*?:"<>|]', '', val).upper()
-        for ext in [".JPG", ".JPEG", ".PNG", ".WEBP"]:
-            archivo_esperado = nombre_exacto + ext
-            for arc in archivos:
-                if arc.upper() == archivo_esperado:
-                    ruta_completa = os.path.join(CARPETA_LOTE_IMAGENES, arc)
-                    try:
-                        with open(ruta_completa, "rb") as f:
-                            data = base64.b64encode(f.read()).decode("utf-8")
-                            mime = "image/jpeg" if ext in [".JPG", ".JPEG"] else f"image/{ext[1:].lower()}"
-                            return f"data:{mime};base64,{data}"
-                    except Exception as e:
-                        print(f"Error cargando foto local exacta {arc}: {e}")
+    def limpiar_para_comparar(t):
+        if not t:
+            return ""
+        return re.sub(r'[\s\-_\.\#\/\\]+', '', str(t)).lower()
 
-    def limpiar_texto(t):
-        return re.sub(r'[\s\-_\.]+', '', str(t)).lower()
-
-    m_limpio = limpiar_texto(modelo)
-    s_limpio = limpiar_texto(sku)
+    candidatos = [str(sku).strip(), str(modelo).strip()]
 
     for arc in archivos:
-        nombre_base = limpiar_texto(arc.rsplit(".", 1)[0])
-        if (m_limpio and len(m_limpio) > 2 and (m_limpio == nombre_base or m_limpio in nombre_base)) or \
-           (s_limpio and len(s_limpio) > 2 and (s_limpio == nombre_base or s_limpio in nombre_base)):
-            ruta_completa = os.path.join(CARPETA_LOTE_IMAGENES, arc)
-            try:
-                with open(ruta_completa, "rb") as f:
-                    data = base64.b64encode(f.read()).decode("utf-8")
-                    ext = arc.rsplit(".", 1)[-1].lower()
-                    mime = "image/jpeg" if ext in ["jpg", "jpeg"] else f"image/{ext}"
-                    return f"data:{mime};base64,{data}"
-            except Exception as e:
-                print(f"Error cargando foto local flexible {arc}: {e}")
-    return None
+        nombre_archivo_base = arc.rsplit(".", 1)[0]
+        ext = arc.rsplit(".", 1)[-1].lower()
+        
+        if ext not in ["jpg", "jpeg", "png", "webp"]:
+            continue
+
+        limpio_arc = limpiar_para_comparar(nombre_archivo_base)
+
+        for val in candidatos:
+            if not val or val.lower() in ["nan", "universal", "generico", "n/a", ""]:
+                continue
+            
+            limpio_val = limpiar_para_comparar(val)
+            
+            if limpio_val and len(limpio_val) > 1 and (limpio_val == limpio_arc or limpio_val in limpio_arc or limpio_arc in limpio_val):
+                ruta_completa = os.path.join(CARPETA_LOTE_IMAGENES, arc)
+                try:
+                    with open(ruta_completa, "rb") as f:
+                        raw_bytes = f.read()
+                        
+                        # VALIDACIÓN ESTRICTA DE 500x500 PIXELES
+                        if HAS_PIL:
+                            try:
+                                with Image.open(io.BytesIO(raw_bytes)) as img:
+                                    if img.width < 500 or img.height < 500:
+                                        alerta = f"Archivo '{arc}' mide {img.width}x{img.height}px. ML exige mín. 500x500px."
+                                        return None, alerta 
+                            except Exception:
+                                pass
+                                
+                        data = base64.b64encode(raw_bytes).decode("utf-8")
+                        mime = "image/jpeg" if ext in ["jpg", "jpeg"] else f"image/{ext}"
+                        return f"data:{mime};base64,{data}", None
+                except Exception as e:
+                    print(f"Error cargando foto local {arc}: {e}")
+                    
+    return None, None
 
 def subir_foto_a_ml(base64_data, token):
     try:
@@ -151,31 +186,38 @@ def analizar_error_ml(respuesta):
         if not causas and 'message' in error_data:
             causas = [{"message": error_data['message']}]
         
-        msg_list = []
+        errores_procesados = set()
         for c in causas:
-            msg = c.get('message', str(c)) if isinstance(c, dict) else str(c)
+            msg = str(c.get('message', c))
             
-            if "500 pixeles" in msg or "500 pixels" in msg or "minimum size" in msg:
-                msg_limpio = "📸 Error: Las fotos son muy pequeñas (Mínimo 500x500px)."
+            # Ignorar advertencias internas de ML (campos fiscales)
+            if "ignored because it is not modifiable" in msg:
+                continue
+
+            if "pictures are mandatory" in msg:
+                errores_procesados.add("📸 Las exposiciones Clásica/Premium exigen al menos 1 foto obligatoria.")
+            elif "500 pixeles" in msg or "minimum size" in msg or "500 pixels" in msg:
+                errores_procesados.add("📸 Algunas fotos son menores a 500x500px y fueron rechazadas.")
             elif "The provided unit is not valid" in msg or "The provided number is not valid" in msg:
-                match = re.search(r'Attribute (.*?) with value', msg)
-                attr = match.group(1) if match else "Un atributo"
-                msg_limpio = f"📏 Falta unidad en '{attr}' (Debe incluir GB, pulgadas, Hz, etc)."
+                attr_match = re.search(r'Attribute (?:\[)?([A-Z0-9_]+)(?:\])?', msg)
+                attr_name = attr_match.group(1) if attr_match else "Desconocido"
+                errores_procesados.add(f"📏 Falta unidad de medida (GB, pulgadas, Hz, etc) en: {attr_name}.")
             elif "is not valid, item values" in msg:
-                match = re.search(r'Attribute \[(.*?)\]', msg)
-                attr = match.group(1) if match else "Un atributo"
-                msg_limpio = f"❌ Valor no aceptado por ML en '{attr}' (Evita usar 'N/A' o 'No Aplica')."
+                attr_match = re.search(r'Attribute (?:\[)?([A-Z0-9_]+)(?:\])?', msg)
+                attr_name = attr_match.group(1) if attr_match else "Desconocido"
+                errores_procesados.add(f"❌ Valor 'N/A', 'No Aplica' o formato inválido rechazado en: {attr_name}.")
             elif "is required and was omitted" in msg:
-                match = re.search(r'Attribute (.*?) ', msg)
-                attr = match.group(1) if match else "Un atributo"
-                msg_limpio = f"⚠️ Falta atributo obligatorio: '{attr}'."
+                attr_match = re.search(r'Attribute (?:\[)?([A-Z0-9_]+)(?:\])?', msg)
+                attr_name = attr_match.group(1) if attr_match else "Desconocido"
+                errores_procesados.add(f"⚠️ Atributo obligatorio faltante: {attr_name}.")
             else:
-                msg_limpio = f"❌ {msg}"
-            
-            if msg_limpio not in msg_list:
-                msg_list.append(msg_limpio)
+                msg_limpio = msg.replace("Attribute", "Atributo").replace("is not valid", "no es válido").replace("is required", "es obligatorio")
+                errores_procesados.add(f"⚠️ {msg_limpio}")
         
-        return " | ".join(msg_list)
+        if not errores_procesados:
+            return "Error desconocido (Revisa que tu Título o SKU no incumplan políticas de ML)."
+            
+        return " | ".join(list(errores_procesados))[:300]
     except Exception:
         return f"Error HTTP {respuesta.status_code}: Conexión rechazada por Mercado Libre."
 
@@ -195,7 +237,8 @@ def construir_atributos_dinamicos_dict(prod, attr_adicionales, headers):
         if len(gtin_solo_numeros) >= 8:
             lista.append({"id": "GTIN", "value_name": gtin_solo_numeros})
 
-    PROHIBIDOS = {"BRAND", "MODEL", "SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES"}
+    PROHIBIDOS = {"BRAND", "MODEL", "SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES", "MEASURE_UNIT_KEY", "INVOICE_PRODUCT_NAME", "SAT_KEY"}
+    
     if attr_adicionales and isinstance(attr_adicionales, dict):
         for k_id, v_val in attr_adicionales.items():
             k_id_upper = str(k_id).strip().upper()
@@ -203,33 +246,66 @@ def construir_atributos_dinamicos_dict(prod, attr_adicionales, headers):
                 lista.append({"id": k_id_upper, "value_name": str(v_val).strip()})
     return lista
 
-def obtener_diccionario_publicados_ml(headers):
+def obtener_inventario_ml(headers):
+    """Descarga de ML TODOS los títulos y los SKUs activos de la cuenta (usa paginación)."""
+    inventario = {'titulos': set(), 'skus': set()}
     try:
         url_me = f"{API_ML}/users/me"
         res_me = requests.get(url_me, headers=headers)
-        if res_me.status_code != 200: return {}
+        if res_me.status_code != 200: return inventario
         user_id = res_me.json().get("id")
 
-        url_search = f"{API_ML}/users/{user_id}/items/search"
-        res_items = requests.get(url_search, headers=headers)
-        item_ids = res_items.json().get("results", [])
+        item_ids = []
+        offset = 0
+        limit = 50
         
-        diccionario = {}
+        while True:
+            url_search = f"{API_ML}/users/{user_id}/items/search?offset={offset}&limit={limit}"
+            res_search = requests.get(url_search, headers=headers)
+            if res_search.status_code != 200:
+                break
+                
+            data = res_search.json()
+            results = data.get("results", [])
+            if not results:
+                break
+                
+            item_ids.extend(results)
+            paging = data.get("paging", {})
+            total = paging.get("total", 0)
+            offset += limit
+            
+            if offset >= total:
+                break
+
         if item_ids:
             for i in range(0, len(item_ids), 50):
                 ids_str = ",".join(item_ids[i:i+50]) 
                 url_items = f"{API_ML}/items?ids={ids_str}"
                 res_detalles = requests.get(url_items, headers=headers)
+                
                 for item in res_detalles.json():
                     if item.get("code") == 200:
                         body = item.get("body", {})
                         title = body.get("title", "").strip().lower()
-                        permalink = body.get("permalink", "")
-                        if title and permalink:
-                            diccionario[title] = permalink
-        return diccionario
-    except Exception:
-        return {}
+                        if title:
+                            inventario['titulos'].add(title)
+                            
+                        for attr in body.get("attributes", []):
+                            if attr.get("id") in ["SELLER_SKU", "PART_NUMBER", "ALPHANUMERIC_MODEL", "MODEL"]:
+                                val = str(attr.get("value_name", "")).strip().lower()
+                                if val and val not in ["nan", "omitir", "n/a", "null"]:
+                                    inventario['skus'].add(val)
+                                    
+                        custom_field = body.get("seller_custom_field")
+                        if custom_field:
+                            c_val = str(custom_field).strip().lower()
+                            if c_val and c_val not in ["nan", "omitir", "n/a", "null"]:
+                                inventario['skus'].add(c_val)
+    except Exception as e:
+        print("Error obteniendo inventario completo:", e)
+        
+    return inventario
 
 HTML_INTERFACE = """
 <!DOCTYPE html>
@@ -239,9 +315,10 @@ HTML_INTERFACE = """
     <title>ERP Mercado Libre - Dashboard Definitivo</title>
     <style>
         * { box-sizing: border-box; }
-        body { font-family: 'Segoe UI', sans-serif; background: #f8fafc; margin: 0; display: flex; min-height: 100vh; color: #1e293b; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f8fafc; margin: 0; display: flex; min-height: 100vh; color: #1e293b; }
         
-        .sidebar { width: 260px; background: linear-gradient(180deg, #0f172a 0%, #1e1b4b 100%); color: white; transition: width 0.3s; display: flex; flex-direction: column; flex-shrink: 0; border-right: 1px solid #312e81; }
+        /* SIDEBAR */
+        .sidebar { width: 260px; background: linear-gradient(180deg, #0f172a 0%, #1e1b4b 100%); color: white; transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1); display: flex; flex-direction: column; flex-shrink: 0; border-right: 1px solid #312e81; z-index: 100; box-shadow: 4px 0 15px rgba(0,0,0,0.1); }
         .sidebar.collapsed { width: 65px; }
         .sidebar-header { padding: 22px 15px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.1); }
         .logo-text { font-weight: 800; font-size: 16px; white-space: nowrap; overflow: hidden; color: #38bdf8; text-shadow: 0 0 10px rgba(56,189,248,0.3); }
@@ -250,75 +327,91 @@ HTML_INTERFACE = """
         .toggle-btn:hover { background: rgba(255,255,255,0.2); }
         
         .nav-menu { list-style: none; padding: 15px 0; margin: 0; }
-        .nav-item { padding: 15px 20px; display: flex; align-items: center; gap: 14px; cursor: pointer; transition: 0.2s; color: #cbd5e1; font-size: 14px; font-weight: 600; border-left: 4px solid transparent; }
-        .nav-item:hover { background: rgba(255,255,255,0.05); color: #fff; }
+        .nav-item { padding: 15px 20px; display: flex; align-items: center; gap: 14px; cursor: pointer; transition: 0.3s ease; color: #cbd5e1; font-size: 14px; font-weight: 600; border-left: 4px solid transparent; }
+        .nav-item:hover { background: rgba(255,255,255,0.05); color: #fff; transform: translateX(5px); }
         .nav-item.active { background: rgba(56,189,248,0.15); color: #38bdf8; border-left-color: #38bdf8; }
         .sidebar.collapsed .nav-text { display: none; }
         
-        .main-content { flex-grow: 1; padding: 30px; overflow-x: auto; }
-        .section-view { display: none; }
+        /* MAIN CONTENT & CONTAINERS */
+        .main-content { flex-grow: 1; padding: 30px; overflow-x: auto; position: relative; }
+        .section-view { display: none; animation: fadeIn 0.5s cubic-bezier(0.4, 0, 0.2, 1); }
         .section-view.active { display: block; }
         .container { background: white; padding: 30px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.04); border: 1px solid #e2e8f0; }
-        h1 { color: #0f172a; margin-top: 0; font-size: 26px; font-weight: 800; }
+        h1 { color: #0f172a; margin-top: 0; font-size: 26px; font-weight: 800; letter-spacing: -0.5px; }
         .subtitle { color: #475569; font-size: 14px; margin-bottom: 25px; }
         
+        /* CARDS */
         .steps-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 25px; }
-        .step-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; transition: 0.2s; position: relative; overflow: hidden; }
-        .step-card:hover { border-color: #0284c7; box-shadow: 0 4px 12px rgba(2,132,199,0.08); }
+        .step-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; transition: 0.3s ease; position: relative; overflow: hidden; }
+        .step-card:hover { border-color: #0284c7; box-shadow: 0 6px 15px rgba(2,132,199,0.08); transform: translateY(-3px); background: #ffffff; }
         .step-num { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; color: #0284c7; margin-bottom: 6px; display: block; }
         .step-card label { font-weight: 700; font-size: 13px; color: #1e293b; display: block; margin-bottom: 8px; }
         
-        input[type="file"], select, input[type="number"], input[type="text"] { width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px; background: white; font-size: 13px; color: #0f172a; transition: 0.2s; }
+        /* INPUTS & BUTTONS */
+        input[type="file"], select, input[type="number"], input[type="text"] { width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px; background: white; font-size: 13px; color: #0f172a; transition: 0.3s ease; font-family: inherit; }
         input:focus, select:focus { border-color: #0284c7; outline: none; box-shadow: 0 0 0 3px rgba(2,132,199,0.15); }
         
-        button { background: #0284c7; color: white; border: none; padding: 12px 18px; font-weight: 700; border-radius: 8px; cursor: pointer; transition: 0.2s; font-size: 14px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
-        button:hover { background: #0369a1; transform: translateY(-1px); }
-        button:active { transform: translateY(0); }
+        button { background: #0284c7; color: white; border: none; padding: 12px 18px; font-weight: 700; border-radius: 8px; cursor: pointer; transition: 0.3s ease; font-size: 14px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-family: inherit; }
+        button:hover { background: #0369a1; transform: translateY(-2px); box-shadow: 0 5px 15px rgba(3,105,161,0.25); }
+        button:active { transform: translateY(0); box-shadow: none; }
         
-        .mapping-bar { display: none; background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); border: 1px solid #bae6fd; padding: 20px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 4px 15px rgba(2,132,199,0.05); }
+        /* MAPEO Y VISTA PREVIA EXCEL */
+        .mapping-bar { display: none; background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); border: 1px solid #bae6fd; padding: 20px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 4px 15px rgba(2,132,199,0.05); animation: slideDown 0.4s ease; }
         .mapping-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-top: 15px; }
         .mapping-grid label { font-size: 12px; font-weight: 700; color: #0369a1; margin-bottom: 4px; display: block; }
         
-        .excel-preview-box { margin-top: 18px; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; overflow: hidden; }
-        .excel-preview-header { background: #f1f5f9; padding: 10px 15px; font-size: 13px; font-weight: 700; color: #0f172a; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0; }
+        .excel-preview-box { margin-top: 20px; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.02); }
+        .excel-preview-header { background: #f1f5f9; padding: 12px 15px; font-size: 13px; font-weight: 700; color: #0f172a; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #cbd5e1; }
         .excel-preview-nav { display: flex; gap: 8px; align-items: center; }
-        .excel-nav-btn { background: #0284c7; color: white; border: none; padding: 5px 12px; border-radius: 6px; font-size: 11px; cursor: pointer; font-weight: 700; }
-        .excel-nav-btn:disabled { background: #94a3b8; cursor: default; }
-        .excel-table-preview { width: 100%; border-collapse: collapse; font-size: 11px; }
-        .excel-table-preview th, .excel-table-preview td { border: 1px solid #e2e8f0; padding: 6px 10px; text-align: left; }
-        .excel-table-preview th { background: #eff6ff; color: #1d4ed8; font-weight: 700; }
+        .excel-nav-btn { background: #0284c7; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-size: 11px; cursor: pointer; font-weight: 700; }
+        .excel-nav-btn:disabled { background: #94a3b8; cursor: default; transform: none; box-shadow: none; }
         
-        .loader-container { display: none; text-align: center; padding: 50px; background: #f8fafc; border-radius: 16px; margin: 20px 0; border: 2px dashed #38bdf8; }
+        /* TABLA DE EXCEL (MEJORADA) */
+        .excel-table-preview { width: 100%; border-collapse: collapse; font-size: 12px; }
+        .excel-table-preview th, .excel-table-preview td { border: 1px solid #e2e8f0; padding: 8px 12px; text-align: left; white-space: nowrap; }
+        .excel-table-preview th { background: #e0f2fe; color: #0369a1; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; font-size: 11px; position: sticky; top: 0; }
+        .excel-table-preview tbody tr:nth-child(even) { background-color: #f8fafc; }
+        .excel-table-preview tbody tr:hover { background-color: #f1f5f9; }
+        
+        /* LOADER */
+        .loader-container { display: none; text-align: center; padding: 50px; background: #f8fafc; border-radius: 16px; margin: 20px 0; border: 2px dashed #38bdf8; animation: fadeIn 0.3s ease; }
         .spinner-wrapper { position: relative; width: 80px; height: 80px; margin: 0 auto 15px auto; }
         .spinner-circle { box-sizing: border-box; width: 100%; height: 100%; border: 8px solid #e2e8f0; border-top-color: #0284c7; border-radius: 50%; animation: spin 1s linear infinite; }
         .spinner-percentage { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 16px; color: #0284c7; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
         
-        .bulk-toolbar { display: flex; flex-wrap: wrap; gap: 12px; background: #f8fafc; padding: 16px; border-radius: 12px; margin-bottom: 20px; align-items: center; border: 1px solid #e2e8f0; }
+        /* TOOLBAR Y TABLA PRINCIPAL */
+        .bulk-toolbar { display: flex; flex-wrap: wrap; gap: 12px; background: #f8fafc; padding: 16px; border-radius: 12px; margin-bottom: 20px; align-items: center; border: 1px solid #e2e8f0; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02); }
         .bulk-select { padding: 8px 12px; font-size: 13px; border-radius: 6px; border: 1px solid #cbd5e1; background: white; }
         .bulk-btn { background: #7e22ce; color: white; border: none; padding: 8px 16px; font-size: 12px; border-radius: 6px; cursor: pointer; font-weight: 700; }
         .bulk-btn:hover { background: #6b21a8; }
         
-        table.data-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; margin-top: 10px; border-radius: 10px; overflow: hidden; border: 1px solid #e2e8f0; }
-        table.data-table th, table.data-table td { padding: 12px 10px; vertical-align: top; border-bottom: 1px solid #e2e8f0; }
+        table.data-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; margin-top: 10px; border-radius: 10px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px rgba(0,0,0,0.02); }
+        table.data-table th, table.data-table td { padding: 15px 12px; vertical-align: top; border-bottom: 1px solid #e2e8f0; }
         table.data-table th { background: #0f172a; color: white; font-weight: 700; text-align: left; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
         table.data-table tbody tr:nth-child(even) { background: #f8fafc; }
-        table.data-table tbody tr.cat-header:hover { background: #cbd5e1; }
-        table.data-table tbody tr.item-row:hover { background: #f1f5f9; }
         
-        .account-badge { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; margin-top: 6px; margin-right: 4px; }
+        .item-row { transition: all 0.5s ease; opacity: 1; transform: translateX(0); }
+        .item-row:hover { background: #f1f5f9; box-shadow: inset 4px 0 0 #0284c7; }
+        .fade-out { opacity: 0 !important; transform: translateX(50px) !important; pointer-events: none; }
+        
+        /* BADGES Y ETIQUETAS */
+        .account-badge { display: inline-block; padding: 5px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; margin-top: 6px; margin-right: 4px; letter-spacing: 0.3px; }
         .badge-libre { background: #dcfce7; color: #15803d; border: 1px solid #86efac; }
         .badge-existe { background: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5; }
         
-        .cat-tag { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; background: #e0f2fe; color: #0369a1; margin-top: 4px; }
-        .desc-tag { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; background: #dcfce7; color: #15803d; margin-top: 4px; }
-        .attr-summary { font-size: 11px; color: #334155; background: #f1f5f9; padding: 8px 10px; border-radius: 6px; margin-top: 6px; border-left: 3px solid #0284c7; font-weight: 600; }
+        .cat-tag { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; background: #e0f2fe; color: #0369a1; margin-top: 4px; border: 1px solid #bae6fd; }
+        .desc-tag { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; background: #dcfce7; color: #15803d; margin-top: 4px; transition: all 0.3s ease; border: 1px solid #86efac; }
+        .attr-summary { font-size: 11px; color: #334155; background: #f1f5f9; padding: 10px; border-radius: 8px; margin-top: 8px; border-left: 4px solid #0284c7; font-weight: 600; line-height: 1.4; }
         
-        .log-box { background: #0f172a; color: #4ade80; padding: 20px; height: 260px; overflow-y: auto; font-family: 'Consolas', monospace; border-radius: 10px; margin-top: 25px; white-space: pre-wrap; font-size: 12px; line-height: 1.5; border: 1px solid #334155; }
+        /* LOGS */
+        .log-box { background: #0f172a; color: #4ade80; padding: 20px; height: 260px; overflow-y: auto; font-family: 'Consolas', monospace; border-radius: 12px; margin-top: 25px; white-space: pre-wrap; font-size: 12px; line-height: 1.6; border: 1px solid #334155; box-shadow: inset 0 4px 10px rgba(0,0,0,0.5); }
         
-        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(15,23,42,0.75); z-index: 2000; justify-content: center; align-items: center; backdrop-filter: blur(4px); }
-        .modal-box { background: white; padding: 32px; border-radius: 16px; width: 680px; max-width: 95%; box-shadow: 0 20px 50px rgba(0,0,0,0.3); border: 1px solid #e2e8f0; }
-        .modal-box h3 { margin-top: 0; color: #0f172a; border-bottom: 2px solid #0284c7; padding-bottom: 12px; font-size: 18px; font-weight: 800; }
+        /* MODALS */
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(15,23,42,0.75); z-index: 2000; justify-content: center; align-items: center; backdrop-filter: blur(5px); opacity: 0; transition: opacity 0.3s ease; }
+        .modal-overlay.active { display: flex; opacity: 1; }
+        .modal-box { background: white; padding: 32px; border-radius: 16px; width: 680px; max-width: 95%; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); border: 1px solid #e2e8f0; transform: scale(0.95) translateY(20px); transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+        .modal-overlay.active .modal-box { transform: scale(1) translateY(0); }
+        .modal-box h3 { margin-top: 0; color: #0f172a; border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; font-size: 18px; font-weight: 800; }
         
         .modal-grid { display: flex; flex-direction: column; gap: 14px; margin-top: 15px; max-height: 420px; overflow-y: auto; padding-right: 8px; }
         .modal-field { display: flex; flex-direction: column; gap: 6px; }
@@ -326,21 +419,34 @@ HTML_INTERFACE = """
         
         .category-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; max-height: 380px; overflow-y: auto; margin: 15px 0; padding-right: 5px; }
         .category-item { border: 1px solid #cbd5e1; padding: 14px; border-radius: 10px; cursor: pointer; transition: 0.2s; font-size: 13px; font-weight: 700; color: #334155; display: flex; align-items: center; gap: 10px; background: #f8fafc; }
-        .category-item:hover { background: #eff6ff; border-color: #0284c7; color: #0284c7; }
+        .category-item:hover { background: #eff6ff; border-color: #0284c7; color: #0284c7; transform: translateY(-2px); box-shadow: 0 4px 6px rgba(2,132,199,0.1); }
         .category-item.selected { background: #e0f2fe; border-color: #0284c7; color: #0369a1; box-shadow: 0 0 0 2px #0284c7; }
         
-        .photo-manager { border: 2px dashed #94a3b8; padding: 12px; text-align: center; border-radius: 8px; background: #f8fafc; cursor: pointer; position: relative; transition: 0.2s; font-weight: 600; color: #475569; }
+        /* GESTOR DE FOTOS Y GALERIA */
+        .photo-manager { border: 2px dashed #94a3b8; padding: 15px; text-align: center; border-radius: 10px; background: #f8fafc; cursor: pointer; position: relative; transition: 0.3s ease; font-weight: 600; color: #475569; }
         .photo-manager:hover { border-color: #0284c7; background: #eff6ff; color: #0284c7; }
         .photo-manager input[type="file"] { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
-        .preview-container { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; justify-content: center; }
-        .thumb-wrap { position: relative; display: inline-block; }
-        .thumb-wrap img { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; border: 1px solid #cbd5e1; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-        .del-photo-btn { position: absolute; top: -6px; right: -6px; background: #ef4444; color: white; border: none; border-radius: 50%; width: 20px; height: 20px; font-size: 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-weight: bold; }
+        .preview-container { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; justify-content: center; }
+        .thumb-wrap { position: relative; display: inline-block; transition: all 0.3s ease; }
+        .thumb-wrap:hover { transform: scale(1.1); z-index: 10; }
+        .thumb-wrap img { width: 55px; height: 55px; object-fit: cover; border-radius: 8px; border: 1px solid #cbd5e1; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+        .del-photo-btn { position: absolute; top: -8px; right: -8px; background: #ef4444; color: white; border: none; border-radius: 50%; width: 22px; height: 22px; font-size: 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-weight: bold; box-shadow: 0 2px 4px rgba(239,68,68,0.4); }
         
-        .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 16px; margin-top: 20px; }
-        .gallery-item { background: white; border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.03); }
-        .gallery-item img { width: 100%; height: 110px; object-fit: contain; border-radius: 6px; background: #f8fafc; }
-        .gallery-item span { display: block; font-size: 11px; font-weight: 700; color: #334155; margin-top: 8px; word-break: break-all; }
+        /* GALERIA LOCAL (CORREGIDA) */
+        .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 20px; margin-top: 25px; }
+        .gallery-item { background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 15px; text-align: center; box-shadow: 0 4px 10px rgba(0,0,0,0.03); transition: all 0.3s ease; display: flex; flex-direction: column; justify-content: space-between; }
+        .gallery-item:hover { transform: translateY(-5px); box-shadow: 0 12px 25px rgba(0,0,0,0.08); border-color: #38bdf8; }
+        .gallery-item img { width: 100%; height: 140px; object-fit: contain; border-radius: 8px; background: #f8fafc; margin-bottom: 12px; }
+        .gallery-item span { display: block; font-size: 12px; font-weight: 700; color: #334155; word-break: break-all; }
+        
+        /* Botón Flotante de Errores */
+        .btn-errores-flotante { position: fixed; bottom: 30px; right: 30px; background: #ef4444; color: white; padding: 16px 24px; border-radius: 50px; font-weight: 800; font-size: 15px; box-shadow: 0 8px 25px rgba(239, 68, 68, 0.5); cursor: pointer; display: none; z-index: 1000; transition: all 0.3s ease; border: none; animation: bounceIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+        .btn-errores-flotante:hover { transform: scale(1.05) translateY(-5px); box-shadow: 0 12px 30px rgba(239, 68, 68, 0.6); }
+        
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        @keyframes fadeIn { 0% { opacity: 0; transform: translateY(10px); } 100% { opacity: 1; transform: translateY(0); } }
+        @keyframes slideDown { 0% { opacity: 0; transform: translateY(-15px); } 100% { opacity: 1; transform: translateY(0); } }
+        @keyframes bounceIn { 0% { transform: scale(0.5); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
     </style>
 </head>
 <body>
@@ -356,11 +462,8 @@ HTML_INTERFACE = """
             <li class="nav-item" onclick="mostrarSeccion('tab-tokens', this)">
                 <span>🔑</span> <span class="nav-text">Cuentas & Tokens</span>
             </li>
-            <li class="nav-item" onclick="mostrarSeccion('tab-csv', this)">
-                <span>📄</span> <span class="nav-text">Descripciones CSV</span>
-            </li>
             <li class="nav-item" onclick="mostrarSeccion('tab-galeria', this); cargarGaleriaLocal();">
-                <span>🖼️</span> <span class="nav-text">Galería Local (lote_imagenes)</span>
+                <span>🖼️</span> <span class="nav-text">Galería (lote_imagenes)</span>
             </li>
             <li class="nav-item" onclick="mostrarSeccion('tab-catalogo', this)">
                 <span>📑</span> <span class="nav-text">Generar Catálogo</span>
@@ -438,7 +541,7 @@ HTML_INTERFACE = """
                                 <button type="button" class="excel-nav-btn" onclick="cambiarHojaPreview(1)">Siguiente Hoja ➡️</button>
                             </div>
                         </div>
-                        <div style="overflow-x: auto; max-height: 250px;">
+                        <div style="overflow-x: auto; max-height: 280px; padding: 1px;">
                             <table class="excel-table-preview" id="excel-preview-table">
                                 <thead id="excel-preview-thead"></thead>
                                 <tbody id="excel-preview-tbody"></tbody>
@@ -477,8 +580,7 @@ HTML_INTERFACE = """
                         </select>
                         <button class="bulk-btn" onclick="aplicarEnvioMasivo()">Aplicar Envío</button>
 
-                        <button class="bulk-btn" onclick="abrirModalMasivo()" style="margin-left:auto; background:#7e22ce;">⚡ Llenar Características Lote</button>
-                        <button id="btn-bulk-ia" class="bulk-btn" onclick="autollenarLoteIA()" style="margin-left:8px; background:#2563eb;">🤖 Autollenar Fichas (IA DeepSeek)</button>
+                        <button id="btn-bulk-ia" class="bulk-btn" onclick="autollenarLoteIA()" style="margin-left:auto; background:#2563eb;">🤖 Generar Fichas Comerciales Masivas (IA DeepSeek)</button>
                     </div>
 
                     <table class="data-table" id="data-table">
@@ -516,31 +618,13 @@ HTML_INTERFACE = """
             </div>
         </div>
 
-        <!-- PESTAÑA 3: CSV DESCRIPCIONES -->
-        <div id="tab-csv" class="section-view">
-            <div class="container">
-                <h1>📄 Asignación Masiva de Descripciones (.CSV)</h1>
-                <div class="subtitle">Carga un archivo CSV que relacione tu SKU con una descripción personalizada para el lote</div>
-                <div style="background: #f8fafc; padding: 20px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 20px;">
-                    <p style="font-weight:bold; margin-top:0;">Formato requerido en el archivo CSV:</p>
-                    <code style="background:#e2e8f0; padding:5px 10px; border-radius:4px; display:block; margin-bottom:10px;">SKU,Descripcion Personalizada</code>
-                    <code style="background:#e2e8f0; padding:5px 10px; border-radius:4px; display:block;">MXP-GI11C,Botella de tinta cian original alta resolución para cartuchos...</code>
-                </div>
-                <label style="background: #16a34a; color: white; padding: 12px 20px; border-radius: 8px; cursor: pointer; font-weight: 700; display: inline-block;">
-                    <span>📂 Seleccionar Archivo CSV de Descripciones</span>
-                    <input type="file" accept=".csv" style="display:none;" onchange="cargarDescripcionesCSV(this)">
-                </label>
-                <p id="csv-status" style="font-weight:700; color:#16a34a; margin-top:15px;"></p>
-            </div>
-        </div>
-
         <!-- PESTAÑA 4: GALERÍA LOCAL DE IMÁGENES -->
         <div id="tab-galeria" class="section-view">
             <div class="container">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:15px;">
                     <div>
-                        <h1 style="margin:0;">🖼️ Galería Local de Imágenes (Carpeta: lote_imagenes)</h1>
-                        <div class="subtitle" style="margin-bottom:0;">Verifica visualmente en tiempo real todas las fotos que el sistema tiene listas para emparejar</div>
+                        <h1 style="margin:0;">🖼️ Galería Local de Imágenes</h1>
+                        <div class="subtitle" style="margin-bottom:0;">Carpeta: <code>lote_imagenes</code>. Verifica visualmente en tiempo real todas las fotos listas para emparejar.</div>
                     </div>
                     <button onclick="cargarGaleriaLocal()" style="background:#0284c7; padding:10px 18px; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">🔄 Actualizar Galería</button>
                 </div>
@@ -615,7 +699,7 @@ HTML_INTERFACE = """
                                 <button type="button" class="excel-nav-btn" onclick="cambiarHojaPreviewCat(1)">Siguiente ➡️</button>
                             </div>
                         </div>
-                        <div style="overflow-x: auto; max-height: 250px;">
+                        <div style="overflow-x: auto; max-height: 280px; padding: 1px;">
                             <table class="excel-table-preview" id="cat-excel-preview-table">
                                 <thead id="cat-excel-preview-thead"></thead>
                                 <tbody id="cat-excel-preview-tbody"></tbody>
@@ -646,17 +730,33 @@ HTML_INTERFACE = """
 
     </div>
 
+    <!-- BOTON FLOTANTE DE ERRORES -->
+    <button id="btn-errores-flotante" class="btn-errores-flotante" onclick="abrirModalErrores()">⚠️ Ver Errores del Lote</button>
+
+    <!-- MODAL DE LISTA DE ERRORES CONSOLIDADA -->
+    <div id="modal-errores-lista" class="modal-overlay">
+        <div class="modal-box" style="border-top: 6px solid #ef4444; width: 800px;">
+            <h3 style="color: #ef4444; border-bottom: none; margin-bottom: 5px;">📋 Errores de la última publicación</h3>
+            <p style="font-size: 13px; color: #475569; margin-top: 0;">Corrige estos detalles en la tabla principal y vuelve a presionar "Publicar Lote".</p>
+            <div id="error-list-content" style="font-size: 13px; color: #7f1d1d; max-height: 400px; overflow-y: auto; background: #fef2f2; padding: 15px; border-radius: 8px; border: 1px solid #fca5a5;">
+            </div>
+            <div style="display:flex; justify-content:flex-end; margin-top:20px;">
+                <button onclick="cerrarModal('modal-errores-lista')" style="background:#ef4444; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">Cerrar</button>
+            </div>
+        </div>
+    </div>
+
     <!-- MODAL EMERGENTE DE CATEGORÍAS MLV -->
     <div id="modal-categoria-mlv" class="modal-overlay">
         <div class="modal-box">
-            <h3>🏷️ Selecciona una Categoría Oficial de Mercado Libre</h3>
+            <h3 style="border-color: #16a34a;">🏷️ Selecciona Categoría Filtro</h3>
             <p style="font-size:13px; color:#475569; margin-bottom:10px;">
                 Filtra tu rango de filas por un rubro oficial para mayor precisión, o elige cargar absolutamente todo el inventario:
             </p>
             <div id="lista-categorias-ml" class="category-grid"></div>
             <input type="hidden" id="cat-seleccionada-id" value="TODAS">
             <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:20px; border-top:1px solid #e2e8f0; padding-top:15px;">
-                <button onclick="cerrarModalCategorias()" style="background:#64748b; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">Cancelar</button>
+                <button onclick="cerrarModal('modal-categoria-mlv')" style="background:#64748b; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">Cancelar</button>
                 <button onclick="confirmarYCargarInventario()" style="background:#16a34a; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">
                     🚀 Confirmar y Analizar Inventario
                 </button>
@@ -664,35 +764,17 @@ HTML_INTERFACE = """
         </div>
     </div>
 
-    <!-- MODAL MASIVO -->
-    <div id="modal-bulk-atributos" class="modal-overlay">
-        <div class="modal-box">
-            <h3 style="color:#7e22ce;">⚡ Llenado Masivo de Características</h3>
-            <p style="font-size:12px; color:#475569;">Los atributos que llenes aquí se aplicarán a todos los artículos marcados con check.</p>
-            <div class="modal-grid">
-                <div class="modal-field"><label>Marca (Común para el lote):</label><input type="text" id="bm-mar" placeholder="Ej: MAXIPRINT"></div>
-                <div class="modal-field"><label>Color (Común para el lote):</label><input type="text" id="bm-color" placeholder="Ej: Negro / Cian"></div>
-                <div class="modal-field"><label>Compatibilidad / Rendimiento:</label><input type="text" id="bm-compat" placeholder="Ej: Canon G1100"></div>
-                <div class="modal-field"><label>Material / Especificación:</label><input type="text" id="bm-mat" placeholder="Ej: Original"></div>
-            </div>
-            <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
-                <button onclick="cerrarModalMasivo()" style="background:#64748b; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">Cancelar</button>
-                <button onclick="aplicarAtributosMasivos()" style="background:#7e22ce; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">🚀 Aplicar a Todo el Lote</button>
-            </div>
-        </div>
-    </div>
-
     <!-- MODAL INDIVIDUAL DINÁMICO CONDENSADO -->
     <div id="modal-atributos" class="modal-overlay">
         <div class="modal-box">
-            <h3 style="margin-bottom: 5px;">🛠️ Ficha Técnica (Vista Condensada)</h3>
-            <p style="font-size:12px; color:#64748b; margin-top:0; margin-bottom:15px;">Solo te mostramos las características que Mercado Libre exige (*). Las demás están ocultas para agilizar tu trabajo.</p>
+            <h3 style="margin-bottom: 5px;">🛠️ Ficha Técnica de ML</h3>
+            <p style="font-size:12px; color:#64748b; margin-top:0; margin-bottom:15px;">Completa los atributos obligatorios que exige Mercado Libre (*). Usa términos genéricos si desconoces el valor exacto.</p>
             <input type="hidden" id="modal-idx">
             <div id="modal-attr-dinamicos" class="modal-grid">
-                <div style="text-align:center; padding:20px; color:#64748b;">⏳ Cargando ficha técnica de Mercado Libre...</div>
+                <div style="text-align:center; padding:20px; color:#0284c7; font-weight:bold;">⏳ Consultado atributos requeridos...</div>
             </div>
             <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
-                <button onclick="cerrarModal()" style="background:#64748b; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">Cancelar</button>
+                <button onclick="cerrarModal('modal-atributos')" style="background:#64748b; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">Cancelar</button>
                 <button onclick="guardarAtributosModal()" style="background:#0284c7; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">💾 Guardar Ficha Técnica</button>
             </div>
         </div>
@@ -708,7 +790,7 @@ HTML_INTERFACE = """
             </div>
             
             <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
-                <button onclick="document.getElementById('modal-ver-descripcion').style.display='none'" style="background:#64748b; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">Cerrar Vista Previa</button>
+                <button onclick="cerrarModal('modal-ver-descripcion')" style="background:#64748b; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">Cerrar Vista Previa</button>
             </div>
         </div>
     </div>
@@ -717,7 +799,6 @@ HTML_INTERFACE = """
         const imagenesPorFila = {};
         const atributosPorFila = {};
         const atributosAdicionalesPorFila = {};
-        const descripcionesCSV = {};
         let intervaloProgreso = null;
         
         let datosVistaPrevia = [];
@@ -757,9 +838,14 @@ HTML_INTERFACE = """
             }
         };
 
-        // ==========================================
-        // FUNCIONES MAESTRO DE LOTES
-        // ==========================================
+        function formatCellValue(val) {
+            if (val === null || val === undefined || val === "nan") return "";
+            if (!isNaN(val) && val.toString().includes('.')) {
+                return parseFloat(val).toFixed(2);
+            }
+            return val;
+        }
+
         async function detectarHojasYVistaPrevia(inputElement) {
             const file = inputElement.files[0];
             const selectHoja = document.getElementById('hoja-select');
@@ -838,7 +924,7 @@ HTML_INTERFACE = """
                 const fila = vista.filas[r];
                 let trB = `<tr><td><b>Fila ${r}</b></td>`;
                 f0.forEach((_, cIdx) => {
-                    trB += `<td>${fila[cIdx] || ""}</td>`;
+                    trB += `<td>${formatCellValue(fila[cIdx])}</td>`;
                 });
                 trB += "</tr>";
                 tbody.innerHTML += trB;
@@ -912,9 +998,6 @@ HTML_INTERFACE = """
             });
         }
 
-        // ==========================================
-        // AGRUPADOR Y DOBLE CHECKBOX
-        // ==========================================
         function toggleCatGrupo(clase) {
             document.querySelectorAll('.' + clase).forEach(el => {
                 el.style.display = (el.style.display === 'none') ? 'table-row' : 'none';
@@ -922,7 +1005,7 @@ HTML_INTERFACE = """
         }
 
         function toggleCategory(event, checkbox) {
-            event.stopPropagation(); // Evitar que el clic cierre el acordeon
+            event.stopPropagation();
             const targetClass = checkbox.getAttribute('data-target');
             document.querySelectorAll('.' + targetClass + ' .prod-check').forEach(cb => {
                 cb.checked = checkbox.checked;
@@ -930,7 +1013,6 @@ HTML_INTERFACE = """
         }
 
         function toggleAll(source) {
-            // Selecciona tanto los productos como los checks maestros de categoría
             document.querySelectorAll('.prod-check, .cat-header input[type="checkbox"]').forEach(cb => cb.checked = source.checked);
         }
 
@@ -971,89 +1053,10 @@ HTML_INTERFACE = """
             }, 250);
         }
 
-        function cargarDescripcionesCSV(input) {
-            const file = input.files[0];
-            if (!file) return;
-
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                const text = e.target.result;
-                const lineas = text.split('\\n');
-                let matchCount = 0;
-
-                for (let i = 1; i < lineas.length; i++) {
-                    const l = lineas[i].split(',');
-                    if (l.length >= 2) {
-                        const clave = l[0].trim().toLowerCase();
-                        const desc = l.slice(1).join(',').replace(/["']/g, '').trim();
-                        if (clave && desc) descripcionesCSV[clave] = desc;
-                    }
-                }
-
-                document.querySelectorAll('.prod-check').forEach(cb => {
-                    const idx = cb.dataset.idx;
-                    const skuVal = (document.getElementById('sku-'+idx).value || '').toLowerCase();
-                    const titVal = (document.getElementById('tit-'+idx).value || '').toLowerCase();
-
-                    if (descripcionesCSV[skuVal] || descripcionesCSV[titVal]) {
-                        matchCount++;
-                        document.getElementById('desc-tag-'+idx).innerText = "📄 Desc. CSV Asignada";
-                        document.getElementById('desc-init-'+idx).value = descripcionesCSV[skuVal] || descripcionesCSV[titVal];
-                    }
-                });
-
-                document.getElementById('csv-status').innerText = `✅ Se asignaron descripciones personalizadas a ${matchCount} artículos en memoria.`;
-                alert(`✅ Archivo CSV procesado con éxito.`);
-            };
-            reader.readAsText(file);
-        }
-
         function toggleGtin(idx) {
             const selectVal = document.getElementById('gtin-razon-'+idx).value;
             const inputField = document.getElementById('gtin-'+idx);
             inputField.style.display = (selectVal === 'CUSTOM') ? 'block' : 'none';
-        }
-
-        function abrirModalMasivo() {
-            document.getElementById('modal-bulk-atributos').style.display = 'flex';
-        }
-
-        function cerrarModalMasivo() {
-            document.getElementById('modal-bulk-atributos').style.display = 'none';
-        }
-
-        function aplicarAtributosMasivos() {
-            const marVal = document.getElementById('bm-mar').value.trim();
-            const colorVal = document.getElementById('bm-color').value.trim();
-            const compatVal = document.getElementById('bm-compat').value.trim();
-            const matVal = document.getElementById('bm-mat').value.trim();
-            let count = 0;
-
-            document.querySelectorAll('.prod-check:checked').forEach(cb => {
-                const idx = cb.dataset.idx;
-                if (marVal) {
-                    atributosPorFila[idx].marca = marVal;
-                    document.getElementById('mar-'+idx).value = marVal;
-                }
-                if (colorVal) {
-                    if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
-                    atributosAdicionalesPorFila[idx]["COLOR"] = colorVal;
-                }
-                if (compatVal) {
-                    if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
-                    atributosAdicionalesPorFila[idx]["COMPATIBLE_MODELS"] = compatVal;
-                }
-                if (matVal) {
-                    if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
-                    atributosAdicionalesPorFila[idx]["MATERIAL"] = matVal;
-                }
-
-                actualizarResumenAtributos(idx);
-                count++;
-            });
-
-            cerrarModalMasivo();
-            alert(`✅ Características aplicadas masivamente a ${count} artículos.`);
         }
 
         function obtenerValorGuardado(att, attrAdic, attrBase) {
@@ -1070,9 +1073,6 @@ HTML_INTERFACE = """
             return "";
         }
 
-        // ==========================================
-        // MODAL VISTA PREVIA DESCRIPCION FINAL
-        // ==========================================
         function verDescripcion(idx) {
             const titulo = document.getElementById('tit-'+idx).value;
             const marca = document.getElementById('mar-'+idx).value || 'Genérico';
@@ -1106,15 +1106,17 @@ HTML_INTERFACE = """
             descFinal += BLOQUE_INFERIOR;
 
             document.getElementById('desc-preview-text').innerText = descFinal;
-            document.getElementById('modal-ver-descripcion').style.display = 'flex';
+            
+            const overlay = document.getElementById('modal-ver-descripcion');
+            overlay.style.display = 'flex';
+            setTimeout(() => overlay.classList.add('active'), 10);
         }
 
-        // ==========================================
-        // MODAL DE CARACTERISTICAS CONDENSADO
-        // ==========================================
         async function abrirModal(idx) {
             document.getElementById('modal-idx').value = idx;
-            document.getElementById('modal-atributos').style.display = 'flex';
+            const overlay = document.getElementById('modal-atributos');
+            overlay.style.display = 'flex';
+            setTimeout(() => overlay.classList.add('active'), 10);
             
             const contenedor = document.getElementById('modal-attr-dinamicos');
             contenedor.innerHTML = '<div style="text-align:center; padding:20px; color:#0284c7; font-weight:bold;">⏳ Consultado atributos requeridos en Mercado Libre...</div>';
@@ -1128,12 +1130,6 @@ HTML_INTERFACE = """
                 const listaAttrML = await res.json();
 
                 let htmlContent = `
-                    <div style="margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; background: #e0f2fe; padding: 12px; border-radius: 8px; border: 1px solid #7dd3fc;">
-                        <span style="font-size: 13px; font-weight: 800; color: #0369a1;">🤖 Relleno Inteligente de Ficha Técnica</span>
-                        <button type="button" onclick="ejecutarAutollenadoIA(${idx}, this)" style="background: #0284c7; font-size: 11px; padding: 6px 14px; color:white; border:none; border-radius:6px; cursor:pointer;">
-                            ⚡ Autollenar con IA
-                        </button>
-                    </div>
                     <div class="modal-field">
                         <label>Marca: <span style="color:#ef4444; font-weight:bold;" title="Obligatorio">*</span></label>
                         <input type="text" id="m-mar" value="${attrBase.marca || ''}">
@@ -1208,60 +1204,16 @@ HTML_INTERFACE = """
             }
         }
 
-        async function ejecutarAutollenadoIA(idx, btn) {
-            const titVal = document.getElementById('tit-'+idx).value;
-            const catId = document.getElementById('cat-'+idx).value;
-            const skuVal = document.getElementById('sku-'+idx).value;
-
-            const formData = new FormData();
-            formData.append('titulo', titVal);
-            formData.append('cat_id', catId);
-            formData.append('sku', skuVal);
-
-            const textOrig = btn.innerText;
-            btn.innerText = "⏳ Analizando...";
-            btn.disabled = true;
-
-            try {
-                const res = await fetch('/api/autollenar-atributos-ia', { method: 'POST', body: formData });
-                const data = await res.json();
-
-                if (data.atributos) {
-                    if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
-                    
-                    for (const [idAttr, valIA] of Object.entries(data.atributos)) {
-                        const idUpper = String(idAttr).trim ? String(idAttr).trim().toUpperCase() : String(idAttr).toUpperCase();
-                        atributosAdicionalesPorFila[idx][idUpper] = valIA;
-                        
-                        const inputCampo = document.getElementById(`m-txt-${idUpper}`);
-                        if (inputCampo) {
-                            inputCampo.value = valIA;
-                            inputCampo.style.backgroundColor = "#dcfce7";
-                        }
-                    }
-
-                    if (data.descripcion && data.descripcion.trim() !== "") {
-                        document.getElementById('desc-init-'+idx).value = data.descripcion;
-                        const badge = document.getElementById('desc-tag-'+idx);
-                        badge.innerText = "✨ Desc. IA Generada";
-                        badge.style.backgroundColor = "#fef08a";
-                        badge.style.color = "#854d0e";
-                    }
-
-                    actualizarResumenAtributos(idx);
-                } else if (data.error) {
-                    alert("Error de IA: " + data.error);
-                }
-            } catch(e) {
-                alert("No se pudieron autollenar algunos atributos.");
-            } finally {
-                btn.innerText = textOrig;
-                btn.disabled = false;
-            }
+        function cerrarModal(idModal) {
+            const overlay = document.getElementById(idModal);
+            overlay.classList.remove('active');
+            setTimeout(() => { overlay.style.display = 'none'; }, 300);
         }
-
-        function cerrarModal() {
-            document.getElementById('modal-atributos').style.display = 'none';
+        
+        function abrirModalErrores() {
+            const overlay = document.getElementById('modal-errores-lista');
+            overlay.style.display = 'flex';
+            setTimeout(() => overlay.classList.add('active'), 10);
         }
 
         function guardarAtributosModal() {
@@ -1286,7 +1238,7 @@ HTML_INTERFACE = """
             });
 
             actualizarResumenAtributos(idx);
-            cerrarModal();
+            cerrarModal('modal-atributos');
         }
 
         function actualizarResumenAtributos(idx) {
@@ -1297,7 +1249,8 @@ HTML_INTERFACE = """
             if (totalDinamicos > 0) {
                 info += ` | ⚡ +${totalDinamicos} características agregadas`;
             }
-            document.getElementById('resumen-attr-'+idx).innerText = info;
+            const resumenEl = document.getElementById('resumen-attr-'+idx);
+            if(resumenEl) resumenEl.innerText = info;
         }
 
         function procesarArchivos(inputElement, idx) {
@@ -1306,15 +1259,23 @@ HTML_INTERFACE = """
 
             for (let file of files) {
                 if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
-                    alert(`El archivo ${file.name} no es válido. Solo JPG, PNG o WEBP.`);
+                    alert(`❌ El archivo ${file.name} no es válido. Solo JPG, PNG o WEBP.`);
                     continue;
                 }
                 const reader = new FileReader();
                 reader.onload = (e) => {
-                    if (e.target.result && typeof e.target.result === 'string' && e.target.result.startsWith('data:image/')) {
-                        imagenesPorFila[idx].push(e.target.result);
-                        renderizarGaleriaFila(idx);
-                    }
+                    const img = new Image();
+                    img.onload = function() {
+                        if (this.width < 500 || this.height < 500) {
+                            alert(`❌ La imagen "${file.name}" mide ${this.width}x${this.height}px.\\nMercado Libre exige un mínimo de 500x500px. Por favor, sube una imagen de mayor resolución.`);
+                        } else {
+                            if (e.target.result && typeof e.target.result === 'string') {
+                                imagenesPorFila[idx].push(e.target.result);
+                                renderizarGaleriaFila(idx);
+                            }
+                        }
+                    };
+                    img.src = e.target.result;
                 };
                 reader.readAsDataURL(file);
             }
@@ -1341,19 +1302,9 @@ HTML_INTERFACE = """
             }
         }
         
-        function applyingExpo() {
-            const expoVal = document.getElementById('bulk-exposicion').value;
-            document.querySelectorAll('.select-exposicion').forEach(sel => sel.value = expoVal);
-        }
-
         function aplicarExposicionMasiva() {
             const expoVal = document.getElementById('bulk-exposicion').value;
             document.querySelectorAll('.select-exposicion').forEach(sel => sel.value = expoVal);
-        }
-
-        function applyingEnv() {
-            const envioVal = document.getElementById('bulk-envio').value;
-            document.querySelectorAll('.select-envio').forEach(sel => sel.value = envioVal);
         }
 
         function aplicarEnvioMasivo() {
@@ -1365,10 +1316,12 @@ HTML_INTERFACE = """
             const fileInput = document.getElementById('file-db');
             if (!fileInput.files.length) return alert('Selecciona primero un archivo Excel o CSV.');
 
-            const modal = document.getElementById('modal-categoria-mlv');
+            const overlay = document.getElementById('modal-categoria-mlv');
+            overlay.style.display = 'flex';
+            setTimeout(() => overlay.classList.add('active'), 10);
+            
             const grid = document.getElementById('lista-categorias-ml');
             grid.innerHTML = "⏳ Cargando categorías oficiales desde Mercado Libre...";
-            modal.style.display = 'flex';
 
             try {
                 const res = await fetch('/api/categorias-mlv');
@@ -1398,15 +1351,8 @@ HTML_INTERFACE = """
             document.getElementById('cat-seleccionada-id').value = idCat;
         }
 
-        function cerrarModalCategorias() {
-            document.getElementById('modal-categoria-mlv').style.display = 'none';
-        }
-
-        // ==========================================
-        // REPORTE DE AUDITORÍA Y CARGA DE INVENTARIO
-        // ==========================================
         async function confirmarYCargarInventario() {
-            cerrarModalCategorias();
+            cerrarModal('modal-categoria-mlv');
             const idCatDefecto = document.getElementById('cat-seleccionada-id').value;
             const fileInput = document.getElementById('file-db');
 
@@ -1430,6 +1376,7 @@ HTML_INTERFACE = """
             document.getElementById('loader-zona').style.display = 'block';
             document.getElementById('spinner-percentage').innerText = "0%";
             document.getElementById('loader-mensaje').innerText = "Iniciando sincronización...";
+            document.getElementById('btn-errores-flotante').style.display = 'none';
             
             iniciarMonitoreoProgreso();
             
@@ -1499,8 +1446,12 @@ HTML_INTERFACE = """
                                 : `<span class="account-badge badge-libre">${nomCuenta}: Libre</span>`;
                         }
 
-                        // Formatear precio estricto a 2 decimales para la UI
                         const precioFormateado = parseFloat(prod.Precio || 0).toFixed(2);
+
+                        let alertaImgHTML = "";
+                        if (prod.AlertaImagen) {
+                            alertaImgHTML = `<div style="background:#fee2e2; border:1px solid #fca5a5; padding:6px; border-radius:6px; margin-bottom:6px; color:#b91c1c; font-size:11px; font-weight:bold; line-height: 1.3; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">⚠️ ${prod.AlertaImagen}</div>`;
+                        }
 
                         tbody.innerHTML += `
                             <tr id="row-${idx}" class="item-row ${catIdClase}">
@@ -1541,16 +1492,17 @@ HTML_INTERFACE = """
                                     </select>
                                     <input type="text" id="gtin-${idx}" value="${prod.GTIN !== 'N/A' ? prod.GTIN : ''}" style="display:${gtinDisplay}; margin-bottom:4px;">
                                     
-                                    <button type="button" onclick="abrirModal(${idx})" style="background:#0284c7; width:100%; padding:6px; font-size:11px; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; margin-bottom: 4px;">
+                                    <button type="button" onclick="abrirModal(${idx})" style="background:#0284c7; width:100%; padding:8px; font-size:11px; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; margin-bottom: 4px;">
                                         ⚡ Llenar Ficha Técnica (Obligatorios)
                                     </button>
-                                    <button type="button" onclick="verDescripcion(${idx})" style="background:#475569; width:100%; padding:6px; font-size:11px; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold;">
+                                    <button type="button" onclick="verDescripcion(${idx})" style="background:#475569; width:100%; padding:8px; font-size:11px; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold;">
                                         👁️ Ver Descripción Final
                                     </button>
                                     
                                     <div id="resumen-attr-${idx}" class="attr-summary">${resumenInit}</div>
                                 </td>
                                 <td>
+                                    ${alertaImgHTML}
                                     <div class="photo-manager">
                                         <span>📸 Clic o Arrastra fotos aquí</span>
                                         <input type="file" accept="image/jpeg, image/png, image/webp" multiple onchange="procesarArchivos(this, ${idx})">
@@ -1563,14 +1515,13 @@ HTML_INTERFACE = """
                     });
                 }
 
-                // PANEL DE REPORTE
                 const repBox = document.getElementById('resumen-reporte-box');
                 document.getElementById('texto-resumen-reporte').innerHTML = `
                     <b>📊 Reporte de Auditoría de Inventario:</b><br>
                     • Se escanearon <b>${resultado.total_leidos}</b> artículos en el rango de filas seleccionado.<br>
                     • <b>${resultado.total_aprobados}</b> artículos pasaron los filtros y están listos para ser publicados.<br>
                     • <b style="color:#b91c1c;">${resultado.total_omitidos}</b> artículos fueron ignorados (por duplicidad, falta de título, o porque no coinciden con la categoría).<br><br>
-                    <a href="/api/descargar-reporte/${resultado.archivo_reporte}" target="_blank" style="background:#166534; color:white; padding:8px 16px; border-radius:6px; font-weight:bold; text-decoration:none; display:inline-block;">📥 Descargar Reporte Completo en Excel</a>
+                    <a href="/api/descargar-reporte/${resultado.archivo_reporte}" target="_blank" style="background:#166534; color:white; padding:10px 18px; border-radius:8px; font-weight:bold; text-decoration:none; display:inline-block; transition:0.3s; margin-top:8px;">📥 Descargar Reporte Completo en Excel</a>
                 `;
                 repBox.style.display = 'block';
                 document.getElementById('tabla-container').style.display = 'block';
@@ -1586,12 +1537,12 @@ HTML_INTERFACE = """
 
         async function cargarGaleriaLocal() {
             const cont = document.getElementById('galeria-contenedor');
-            cont.innerHTML = "<div style='color:#64748b;'>⏳ Leyendo archivos desde la carpeta lote_imagenes...</div>";
+            cont.innerHTML = "<div style='color:#64748b; grid-column: 1 / -1; text-align: center; padding: 20px;'>⏳ Leyendo archivos desde la carpeta lote_imagenes...</div>";
             try {
                 const res = await fetch('/api/galeria-local');
                 const imgs = await res.json();
                 if (!imgs.length) {
-                    cont.innerHTML = "<div style='color:#64748b;'>No se encontraron imágenes JPG, PNG o WEBP en la carpeta <b>lote_imagenes</b>.</div>";
+                    cont.innerHTML = "<div style='color:#64748b; grid-column: 1 / -1; text-align: center; padding: 20px;'>No se encontraron imágenes JPG, PNG o WEBP en la carpeta <b>lote_imagenes</b>.</div>";
                     return;
                 }
                 cont.innerHTML = "";
@@ -1604,16 +1555,17 @@ HTML_INTERFACE = """
                     `;
                 });
             } catch(e) {
-                cont.innerHTML = "<div style='color:red;'>❌ Error cargando galería local.</div>";
+                cont.innerHTML = "<div style='color:red; grid-column: 1 / -1; text-align: center; padding: 20px;'>❌ Error cargando galería local.</div>";
             }
         }
 
         async function ejecutarPublicacion() {
-            // Limpiar errores previos visuales
             document.querySelectorAll('.item-row').forEach(row => {
-                row.style.border = "";
+                row.style.borderLeft = "none";
                 row.style.backgroundColor = "";
+                row.classList.remove('fade-out');
             });
+            document.getElementById('btn-errores-flotante').style.display = 'none';
 
             const seleccionados = [];
             document.querySelectorAll('.prod-check:checked').forEach(cb => {
@@ -1623,7 +1575,6 @@ HTML_INTERFACE = """
                 const razonGtin = document.getElementById('gtin-razon-'+idx).value;
                 let gtinFinal = (razonGtin === 'CUSTOM') ? document.getElementById('gtin-'+idx).value : 'OMITIR';
 
-                // Forzar 2 decimales limpios antes de enviar
                 let precioLimpio = parseFloat(document.getElementById('pre-'+idx).value || 0).toFixed(2);
 
                 seleccionados.push({
@@ -1668,27 +1619,48 @@ HTML_INTERFACE = """
 
                 if (resData.errores_idx && Object.keys(resData.errores_idx).length > 0) {
                     let fallos = 0;
-                    for (const [idxError, errorMsg] of Object.entries(resData.errores_idx)) {
-                        const fila = document.getElementById('row-' + idxError);
-                        if(fila) {
-                            fila.style.borderLeft = "6px solid #ef4444";
-                            fila.style.backgroundColor = "#fef2f2";
+                    let errorHtmlList = "";
+
+                    seleccionados.forEach(prod => {
+                        const rowEl = document.getElementById('row-' + prod.idx);
+                        if (rowEl) {
+                            if (resData.errores_idx[prod.idx]) {
+                                const errMsg = resData.errores_idx[prod.idx];
+                                rowEl.style.borderLeft = "6px solid #ef4444";
+                                rowEl.style.backgroundColor = "#fef2f2";
+                                
+                                errorHtmlList += `<li style="margin-bottom: 8px;"><b>${prod.Titulo}:</b> <span style="color:#b91c1c;">${errMsg}</span></li>`;
+                                
+                                const resumenDiv = document.getElementById('resumen-attr-'+prod.idx);
+                                resumenDiv.innerHTML = `
+                                    <div style="background:#fee2e2; border:1px solid #fca5a5; padding:8px; border-radius:6px; margin-top:8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
+                                        <span style="color:#b91c1c; font-weight:bold; font-size:11px;">❌ ${errMsg}</span>
+                                    </div>
+                                ` + resumenDiv.innerHTML;
+                                fallos++;
+                            } else {
+                                rowEl.classList.add('fade-out');
+                                setTimeout(() => rowEl.remove(), 500);
+                            }
                         }
-                        
-                        const resumenDiv = document.getElementById('resumen-attr-'+idxError);
-                        resumenDiv.innerHTML = `
-                            <div style="background:#fee2e2; border:1px solid #fca5a5; padding:6px; border-radius:6px; margin-top:6px;">
-                                <span style="color:#b91c1c; font-weight:bold; font-size:11px;">❌ ${errorMsg}</span><br>
-                                <button onclick="ejecutarAutollenadoIA(${idxError}, this)" style="background:#b91c1c; color:white; border:none; padding:4px 8px; border-radius:4px; font-size:10px; cursor:pointer; margin-top:6px; font-weight:bold;">
-                                    🤖 Corregir Errores con IA
-                                </button>
-                            </div>
-                        `;
-                        fallos++;
-                    }
-                    alert(`Hubo errores con ${fallos} artículos. Han sido resaltados en color rojo en tu panel para que uses la corrección IA.`);
+                    });
+
+                    const btnErrores = document.getElementById('btn-errores-flotante');
+                    btnErrores.style.display = 'block';
+                    btnErrores.innerHTML = `⚠️ ${fallos} Errores - Ver Detalles`;
+                    document.getElementById('error-list-content').innerHTML = `<ul>${errorHtmlList}</ul>`;
+
+                    alert(`⚠️ Se publicaron ${seleccionados.length - fallos} artículos exitosamente. \nQuedaron en pantalla ${fallos} artículos que deben corregirse.`);
                 } else {
-                    alert("¡Todo el lote se publicó de forma perfecta sin errores!");
+                    seleccionados.forEach(prod => {
+                        const rowEl = document.getElementById('row-' + prod.idx);
+                        if(rowEl) {
+                            rowEl.classList.add('fade-out');
+                            setTimeout(() => rowEl.remove(), 500);
+                        }
+                    });
+                    document.getElementById('btn-errores-flotante').style.display = 'none';
+                    alert("🎉 ¡Todo el lote se publicó de forma perfecta sin errores!");
                 }
 
             } catch(e) {
@@ -1699,9 +1671,6 @@ HTML_INTERFACE = """
             }
         }
 
-        // ==========================================
-        // FUNCIONES CATÁLOGO (PREMIUM)
-        // ==========================================
         async function detectarHojasCat(inputElement) {
             const file = inputElement.files[0];
             const selectHoja = document.getElementById('cat-hoja-select');
@@ -1776,7 +1745,7 @@ HTML_INTERFACE = """
             for (let r = 1; r < Math.min(10, vista.filas.length); r++) {
                 const fila = vista.filas[r];
                 let trB = `<tr><td><b>Fila ${r}</b></td>`;
-                f0.forEach((_, cIdx) => { trB += `<td>${fila[cIdx] || ""}</td>`; });
+                f0.forEach((_, cIdx) => { trB += `<td>${formatCellValue(fila[cIdx])}</td>`; });
                 trB += "</tr>";
                 tbody.innerHTML += trB;
             }
@@ -1901,7 +1870,7 @@ HTML_INTERFACE = """
             const checks = document.querySelectorAll('.prod-check:checked');
             if (!checks.length) return alert('No hay artículos seleccionados para analizar.');
             
-            if (!confirm(`¿Iniciar análisis IA para ${checks.length} artículos? Generará fichas y descripciones comerciales.`)) return;
+            if (!confirm(`¿Iniciar análisis IA para ${checks.length} artículos? Generará fichas y descripciones comerciales. Es un proceso asombroso, ¡prepárate para la magia!`)) return;
 
             const btn = document.getElementById('btn-bulk-ia');
             const textoOriginal = btn.innerHTML;
@@ -1910,12 +1879,18 @@ HTML_INTERFACE = """
 
             for (let i = 0; i < checks.length; i++) {
                 const idx = checks[i].dataset.idx;
+                
+                const filaVisual = document.getElementById('row-'+idx);
+                if(filaVisual && filaVisual.classList.contains('fade-out')) {
+                    continue; 
+                }
+
                 const titVal = document.getElementById('tit-'+idx).value;
                 const catId = document.getElementById('cat-'+idx).value;
                 const skuVal = document.getElementById('sku-'+idx).value;
                 const resumenDiv = document.getElementById('resumen-attr-'+idx);
 
-                resumenDiv.innerHTML = "⏳ <b>DeepSeek analizando...</b>";
+                resumenDiv.innerHTML = "⏳ <b style='color:#2563eb;'>DeepSeek analizando... ✨</b>";
                 
                 const fd = new FormData();
                 fd.append('titulo', titVal);
@@ -1939,14 +1914,17 @@ HTML_INTERFACE = """
                             badge.innerText = "✨ Desc. IA Generada";
                             badge.style.backgroundColor = "#fef08a";
                             badge.style.color = "#854d0e";
+                            badge.style.boxShadow = "0 0 10px rgba(254, 240, 138, 0.5)";
                         }
 
                         actualizarResumenAtributos(idx);
+                        
+                        resumenDiv.innerHTML = `<div style="background:#dcfce7; border:1px solid #86efac; padding:6px; border-radius:6px; margin-top:6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">✅ <span style="color:#166534; font-weight:bold; font-size:11px;">Optimizador IA Finalizado</span></div>` + resumenDiv.innerHTML;
                     } else if (data.error) {
                         resumenDiv.innerHTML = `❌ <span style="color:red;">Error: ${data.error}</span>`;
                     }
                 } catch(e) {
-                    resumenDiv.innerText = "❌ Fallo de red con la IA";
+                    resumenDiv.innerText = "❌ Fallo de red conectando con la IA";
                 }
                 
                 await new Promise(r => setTimeout(r, 800));
@@ -1954,7 +1932,7 @@ HTML_INTERFACE = """
 
             btn.innerHTML = textoOriginal;
             btn.disabled = false;
-            alert("✅ ¡Autollenado masivo completado con éxito!");
+            alert("✅ ¡Autollenado de Fichas y Descripciones Masivo completado con éxito!");
         }
     </script>
 </body>
@@ -2032,18 +2010,22 @@ def endpoint_atributos_categoria(cat_id: str):
         if res.status_code == 200:
             attrs = res.json()
             relevantes = []
-            PROHIBIDOS = {"BRAND", "MODEL", "SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES"}
+            PROHIBIDOS = {"BRAND", "MODEL", "SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES", "MEASURE_UNIT_KEY", "INVOICE_PRODUCT_NAME", "SAT_KEY"}
             for att in attrs:
                 aid = att.get("id")
-                if aid not in PROHIBIDOS and not att.get("read_only", False):
-                    es_requerido = att.get("tags", {}).get("required", False)
+                tags = att.get("tags", {})
+                es_read_only = tags.get("read_only", False) or tags.get("hidden", False)
+                if aid not in PROHIBIDOS and not es_read_only:
+                    es_requerido = tags.get("required", False)
+                    valores_validos = [v.get("name") for v in att.get("values", [])[:10]]
                     relevantes.append({
                         "id": aid,
                         "name": att.get("name"),
                         "value_type": att.get("value_type", "string"),
                         "hint": att.get("hint", ""),
                         "values": att.get("values", [])[:20],
-                        "required": es_requerido
+                        "required": es_requerido,
+                        "valid_values": valores_validos
                     })
             relevantes.sort(key=lambda x: not x["required"])
             return relevantes
@@ -2090,23 +2072,37 @@ def autollenar_atributos_ia(
             return {"error": "No se pudieron obtener los atributos de Mercado Libre."}
 
         attrs_ml = res_ml.json()
-        prohibidos = {"BRAND", "MODEL", "SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES"}
+        PROHIBIDOS = {"BRAND", "MODEL", "SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES", "MEASURE_UNIT_KEY", "INVOICE_PRODUCT_NAME", "SAT_KEY"}
         
         relevantes = []
         for a in attrs_ml:
-            if a.get("id") not in prohibidos and not a.get("read_only", False):
-                es_requerido = a.get("tags", {}).get("required", False)
+            tags = a.get("tags", {})
+            es_read_only = tags.get("read_only", False) or tags.get("hidden", False)
+            if a.get("id") not in PROHIBIDOS and not es_read_only:
+                es_requerido = tags.get("required", False)
+                valores_validos = [v.get("name") for v in a.get("values", [])[:10]]
                 relevantes.append({
                     "id": a.get("id"),
                     "name": a.get("name"),
-                    "required": es_requerido
+                    "required": es_requerido,
+                    "valid_values": valores_validos
                 })
 
         if not relevantes:
             return {"atributos": {}, "descripcion": ""}
 
-        lista_obligatorios = [f"- {a['id']} ({a['name']})" for a in relevantes if a["required"]]
-        lista_opcionales = [f"- {a['id']} ({a['name']})" for a in relevantes if not a["required"]][:12]
+        lista_obligatorios = []
+        for a in relevantes:
+            if a["required"]:
+                hint_vals = f" (Opciones válidas: {', '.join(a['valid_values'])})" if a['valid_values'] else ""
+                lista_obligatorios.append(f"- {a['id']} ({a['name']}){hint_vals}")
+                
+        lista_opcionales = []
+        for a in relevantes:
+            if not a["required"]:
+                hint_vals = f" (Opciones válidas: {', '.join(a['valid_values'])})" if a['valid_values'] else ""
+                lista_opcionales.append(f"- {a['id']} ({a['name']}){hint_vals}")
+        lista_opcionales = lista_opcionales[:12]
 
         texto_oblig = "\n".join(lista_obligatorios) if lista_obligatorios else "Ninguno estrictamente obligatorio."
         texto_opcio = "\n".join(lista_opcionales) if lista_opcionales else "Ninguno adicional."
@@ -2118,7 +2114,7 @@ Dado el siguiente producto tecnológico/electrónico:
 
 Tu tarea es doble:
 1. Redactar una DESCRIPCIÓN COMERCIAL atractiva, persuasiva y detallada (aprox. 2 párrafos) que resalte los beneficios y usos del producto.
-2. Extraer, deducir o investigar los atributos técnicos de Mercado Libre basándote en el Título, SKU y la descripción que acabas de idear.
+2. Extraer o deducir los atributos técnicos de Mercado Libre basándote en el Título, SKU y tu descripción.
 
 Atributos OBLIGATORIOS (DEBES incluirlos en el JSON):
 {texto_oblig}
@@ -2130,9 +2126,10 @@ Reglas estrictas e inquebrantables:
 1. Responde SOLO con un JSON válido. NADA de texto adicional (sin etiquetas de código).
 2. El JSON debe contener la clave exacta "DESCRIPCION_COMERCIAL".
 3. Las demás claves deben ser EXACTAMENTE el ID del atributo técnico.
-4. OBLIGATORIOS: ¡Nunca vacíos! Si no sabes el dato, usa valores como "Genérico", "Universal", o "Estándar". (Nunca "N/A").
-5. OPCIONALES: Si no sabes la información de un opcional, SIMPLEMENTE NO LO INCLUYAS en el JSON.
-6. REGLA DE ORO PARA MEDIDAS: Todo atributo que represente capacidad, tamaño, longitud o frecuencia (RAM, disco duro, pantalla, Hz, voltaje) DEBE INCLUIR LA UNIDAD DE MEDIDA (ej. "8 GB", "1 TB", "15.6 pulgadas", "144 Hz", "110V"). NUNCA uses "No Aplica" o números solos como "15.6" en estos campos numéricos. Si el atributo es obligatorio y no sabes el valor, inventa un valor estándar realista de la industria en lugar de omitirlo o poner texto inválido.
+4. OBLIGATORIOS: ¡Nunca vacíos! Si no sabes el dato, usa "Genérico", "Universal" o "Estándar". (PROHIBIDO USAR "N/A" o "No Aplica").
+5. OPCIONALES: Si no tienes el dato, SIMPLEMENTE OMÍTELO DEL JSON.
+6. OPCIONES VÁLIDAS: Si un atributo tiene "(Opciones válidas: ...)" en la lista de arriba, es OBLIGATORIO que elijas EXACTAMENTE una de esas palabras (Ejemplo: Si pide SALE_FORMAT, elige "Unidad").
+7. REGLA DE ORO PARA MEDIDAS: Si el atributo es numérico (capacidad, tamaño, frecuencia, voltaje) y NO tiene opciones válidas dadas, DEBE INCLUIR LA UNIDAD DE MEDIDA (ej. "8 GB", "15.6 pulgadas", "144 Hz").
 """
 
         headers_or = {
@@ -2145,7 +2142,7 @@ Reglas estrictas e inquebrantables:
         payload_or = {
             "model": "deepseek/deepseek-chat",
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.2
+            "temperature": 0.1
         }
 
         url_openrouter = "https://" + "openrouter.ai/api/v1/chat/completions"
@@ -2162,7 +2159,6 @@ Reglas estrictas e inquebrantables:
             raw_text = raw_text.replace("```", "").strip()
 
         datos_ia = json.loads(raw_text)
-
         descripcion_ia = datos_ia.pop("DESCRIPCION_COMERCIAL", "")
 
         ids_validos = {a["id"] for a in relevantes}
@@ -2233,17 +2229,17 @@ def previsualizar_archivo(
         buffer.write(file.file.read())
 
     archivos_a_escanear = listar_archivos_token()
-    titulos_por_cuenta = {}
+    inventario_por_cuenta = {}
 
-    actualizar_progreso(15, "Analizando inventarios activos de cada cuenta en Mercado Libre...")
+    actualizar_progreso(15, "Analizando SKUs e inventario activo en Mercado Libre...")
     for arch in archivos_a_escanear:
         token = obtener_token(arch)
         nombre_c = obtener_nombre_cuenta(arch)
         if token:
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-            titulos_por_cuenta[nombre_c] = obtener_titulos_publicados(headers)
+            inventario_por_cuenta[nombre_c] = obtener_inventario_ml(headers)
         else:
-            titulos_por_cuenta[nombre_c] = set()
+            inventario_por_cuenta[nombre_c] = {'titulos': set(), 'skus': set()}
 
     token_ref = obtener_token(archivos_a_escanear[0]) if archivos_a_escanear else None
     headers_ref = {"Authorization": f"Bearer {token_ref}", "Content-Type": "application/json"} if token_ref else {}
@@ -2273,6 +2269,8 @@ def previsualizar_archivo(
     reporte_filas = []
     aprobados_count = 0
     omitidos_count = 0
+    
+    memoria_local = cargar_memoria()
 
     for indice, item in enumerate(filas_rango):
         time.sleep(0.01)
@@ -2280,14 +2278,36 @@ def previsualizar_archivo(
         
         titulo = str(item.get("Titulo", "")).strip()
         titulo_norm = titulo.lower()
+        titulo_truncado = titulo[:60].strip().lower()
+        sku_norm = str(item.get("SKU", "")).strip().lower()
 
         estado_cuentas = {}
         existe_en_todas = True
         existe_en_seleccionada = False
         nombre_seleccionada = obtener_nombre_cuenta(cuenta) if cuenta != "TODAS" else "TODAS"
 
-        for nom_c, set_tits in titulos_por_cuenta.items():
-            if titulo_norm in set_tits:
+        # Validación cruzada (ML Real + Memoria de la App)
+        for nom_c, inv in inventario_por_cuenta.items():
+            
+            titulos_activos = set(inv['titulos'])
+            skus_activos = set(inv['skus'])
+            
+            if nom_c in memoria_local:
+                titulos_activos.update(memoria_local[nom_c].get('titulos', []))
+                skus_activos.update(memoria_local[nom_c].get('skus', []))
+
+            existe_por_sku = (sku_norm and sku_norm not in ["nan", "omitir", "n/a", "null"] and sku_norm in skus_activos)
+            
+            existe_por_titulo = False
+            for t_ml in titulos_activos:
+                # Coincidencia exacta o detecta si ML truncó el título
+                if titulo_norm == t_ml or titulo_norm.startswith(t_ml) or t_ml.startswith(titulo_norm) or titulo_truncado == t_ml:
+                    existe_por_titulo = True
+                    break
+            
+            ya_existe = existe_por_sku or existe_por_titulo
+            
+            if ya_existe:
                 estado_cuentas[nom_c] = "EXISTE"
                 if nom_c == nombre_seleccionada:
                     existe_en_seleccionada = True
@@ -2298,7 +2318,6 @@ def previsualizar_archivo(
         sku = item.get("SKU", "")
         modelo = item.get("Modelo", "")
         
-        # Redondear el precio a 2 decimales limpios
         try:
             precio = round(float(item.get("Precio", 0)), 2)
         except Exception:
@@ -2349,7 +2368,7 @@ def previsualizar_archivo(
         aprobados_count += 1
         actualizar_progreso(porcentaje_actual, f"[{indice+1}/{total_filas}] Sincronizando: {titulo[:25]}...")
             
-        imagen_emparejada = emparejar_imagen_local(modelo, sku, titulo)
+        imagen_emparejada, alerta_imagen = emparejar_imagen_local(modelo, sku, titulo)
         
         productos_activos.append({
             "Titulo": titulo, "Precio": precio, "Stock": stock,
@@ -2357,7 +2376,9 @@ def previsualizar_archivo(
             "Color": "", "Compatibilidad": "", "Material": "",
             "DescripcionCustom": "", "GTIN": "N/A",
             "Categoria_ID": cat_id, "CategoriaNombre": cat_nombre,
-            "ImagenLocal": imagen_emparejada, "EstadoCuentas": estado_cuentas,
+            "ImagenLocal": imagen_emparejada, 
+            "AlertaImagen": alerta_imagen,
+            "EstadoCuentas": estado_cuentas,
             "Hoja": nom_hoja, "CategoriaOrigen": cat_origen
         })
 
@@ -2394,6 +2415,8 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
     total_items = len(productos) * len(archivos_destino)
     procesados = 0
 
+    memoria_local = cargar_memoria()
+
     for arch_token in archivos_destino:
         token = obtener_token(arch_token)
         nombre_perfil = obtener_nombre_cuenta(arch_token)
@@ -2403,21 +2426,45 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
             continue
 
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        titulos_existentes_cuenta = set()
+        
+        inventario_actual = {'titulos': set(), 'skus': set()}
         try:
-            titulos_existentes_cuenta = obtener_titulos_publicados(headers)
+            inventario_actual = obtener_inventario_ml(headers)
         except Exception:
             pass
+            
+        titulos_activos = set(inventario_actual['titulos'])
+        skus_activos = set(inventario_actual['skus'])
+        
+        if nombre_perfil in memoria_local:
+            titulos_activos.update(memoria_local[nombre_perfil].get('titulos', []))
+            skus_activos.update(memoria_local[nombre_perfil].get('skus', []))
+
+        # Memoria temporal para esta ráfaga de ciclos
+        titulos_memoria_programa = set()
+        skus_memoria_programa = set()
 
         for prod in productos:
             time.sleep(0.01)
             procesados += 1
             porcentaje = int((procesados / max(1, total_items)) * 100)
+            
             titulo_original = prod['Titulo'][:60].strip()
+            titulo_norm = titulo_original.lower()
+            sku_norm = str(prod.get('SKU', '')).strip().lower()
             idx_front = prod.get('idx', '')
             
-            if titulo_original.lower() in titulos_existentes_cuenta:
-                logs_totales.append(f"⏭️ [{nombre_perfil}] OMITIDO: '{titulo_original[:20]}...' ya existe en esta cuenta.")
+            existe_por_sku = (sku_norm and sku_norm not in ["nan", "omitir", "n/a", "null"] and (sku_norm in skus_activos or sku_norm in skus_memoria_programa))
+            
+            existe_por_titulo = False
+            titulos_combinados = titulos_activos.union(titulos_memoria_programa)
+            for t_ml in titulos_combinados:
+                if titulo_norm == t_ml or titulo_norm.startswith(t_ml) or t_ml.startswith(titulo_norm):
+                    existe_por_titulo = True
+                    break
+
+            if existe_por_sku or existe_por_titulo:
+                logs_totales.append(f"⏭️ [{nombre_perfil}] OMITIDO: '{titulo_original[:20]}...' (o su SKU) ya existe o fue procesado exitosamente.")
                 continue
 
             actualizar_progreso(porcentaje, f"[{nombre_perfil}] Publicando ({procesados}/{total_items}): {titulo_original[:25]}...")
@@ -2457,7 +2504,6 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
             else:
                 shipping_payload = {"mode": "me2", "local_pick_up": True, "free_shipping": True}
 
-            # REDONDEO ESTRICTO A MÁXIMO 2 DECIMALES
             precio_final = round(float(prod['Precio']), 2)
 
             datos_publicacion = {
@@ -2507,6 +2553,13 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                         pass
                         
                     logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO! -> {permalink}")
+                    
+                    # Carga exitosa: Añadimos a la memoria local y al archivo
+                    titulos_memoria_programa.add(titulo_norm)
+                    if sku_norm and sku_norm != "nan":
+                        skus_memoria_programa.add(sku_norm)
+                    guardar_en_memoria(nombre_perfil, titulo_norm, sku_norm)
+                        
                 else:
                     error_texto = respuesta.text
                     if "restrictions_coliving" in error_texto:
@@ -2533,6 +2586,12 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                             requests.put(url_put, headers=headers, json={"title": titulo_original}, timeout=10)
                             requests.put(url_put, headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=10)
                             logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO (Bypass Catálogo)! -> {permalink}")
+                            
+                            titulos_memoria_programa.add(titulo_norm)
+                            if sku_norm and sku_norm != "nan":
+                                skus_memoria_programa.add(sku_norm)
+                            guardar_en_memoria(nombre_perfil, titulo_norm, sku_norm)
+                                
                         else:
                             detalles = analizar_error_ml(res_bypass)
                             logs_totales.append(f"❌ [{nombre_perfil}] Error '{titulo_original[:15]}...': {detalles}")
@@ -2542,7 +2601,7 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                         logs_totales.append(f"❌ [{nombre_perfil}] Error '{titulo_original[:15]}...': {detalles}")
                         if idx_front: errores_interactivos[idx_front] = detalles
             except Exception as e_req:
-                logs_totales.append(f"❌ [{nombre_perfil}] Excepción de red/servidor enviando '{titulo_original[:15]}...': {str(e_req)}")
+                logs_totales.append(f"❌ [{nombre_perfil}] Excepción enviando '{titulo_original[:15]}...': {str(e_req)}")
                 if idx_front: errores_interactivos[idx_front] = "Problema de conexión con el servidor ML."
 
     actualizar_progreso(100, "¡Lote Completado!")
@@ -2589,7 +2648,7 @@ def generar_catalogo_endpoint(
     actualizar_progreso(30, f"Consultando productos de la cuenta en Mercado Libre...")
     token = obtener_token(cuenta)
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"} if token else {}
-    enlaces_ml = obtener_diccionario_publicados_ml(headers) if token else {}
+    enlaces_ml = obtener_inventario_ml(headers) if token else {}
 
     token_ref = obtener_token(listar_archivos_token()[0]) if listar_archivos_token() else None
     headers_ref = {"Authorization": f"Bearer {token_ref}", "Content-Type": "application/json"} if token_ref else {}
@@ -2701,7 +2760,7 @@ def generar_catalogo_endpoint(
             stock = p.get("Stock", 0)
             modelo = str(p.get("Modelo", "Universal")).strip()
             
-            img_b64 = emparejar_imagen_local(modelo, sku, titulo)
+            img_b64, _ = emparejar_imagen_local(modelo, sku, titulo)
             img_html = f'<img src="{img_b64}">' if img_b64 else '<div class="no-img">Imagen No Disponible</div>'
 
             msg_ws = f"Hola {nombre_empresa}, me interesa el producto:\n*{titulo}*\n(SKU: {sku})\nPrecio: ${precio:.2f}\n¿Tienen disponibilidad?"
