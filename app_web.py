@@ -10,7 +10,7 @@ import asyncio
 import urllib.parse
 from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from dotenv import load_dotenv
 
 from token_manager import (
@@ -39,6 +39,9 @@ os.makedirs(CARPETA_LOTE_IMAGENES, exist_ok=True)
 
 CARPETA_CATALOGOS = "catalogos_generados"
 os.makedirs(CARPETA_CATALOGOS, exist_ok=True)
+
+CARPETA_REPORTES = "reportes"
+os.makedirs(CARPETA_REPORTES, exist_ok=True)
 
 try:
     from google import genai
@@ -401,7 +404,7 @@ HTML_INTERFACE = """
 
                 <div style="margin-bottom: 25px;">
                     <button onclick="abrirModalCategorias()" style="width: 100%; padding: 14px; font-size: 15px; background: #0284c7; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">
-                        🔍 Sincronizar y Elegir Categoría Oficial ML
+                        🔍 Analizar Inventario y Generar Reporte
                     </button>
                 </div>
 
@@ -444,6 +447,10 @@ HTML_INTERFACE = """
                 </div>
 
                 <div id="tabla-container" style="display: none;">
+                    <div id="resumen-reporte-box" style="background: #f0fdf4; border: 1px solid #86efac; border-radius: 8px; padding: 20px; margin-bottom: 20px; display: none;">
+                        <div id="texto-resumen-reporte" style="font-size: 14px; color: #166534; line-height: 1.6;"></div>
+                    </div>
+
                     <div class="bulk-toolbar">
                         <span style="font-weight: 800; color: #0f172a;">⚡ ACCIONES MASIVAS:</span>
                         <select id="bulk-exposicion" class="bulk-select">
@@ -467,7 +474,9 @@ HTML_INTERFACE = """
                     <table class="data-table" id="data-table">
                         <thead>
                             <tr>
-                                <th style="width: 30px;"><input type="checkbox" checked onclick="toggleAll(this)"></th>
+                                <th style="width: 30px;" title="Seleccionar TODO el inventario">
+                                    <input type="checkbox" checked onclick="toggleAll(this)">
+                                </th>
                                 <th style="width: 24%;">Título, Categoría & Estado por Cuenta</th>
                                 <th style="width: 8%;">Precio $</th>
                                 <th style="width: 6%;">Stock</th>
@@ -479,7 +488,7 @@ HTML_INTERFACE = """
                         <tbody id="tabla-body"></tbody>
                     </table>
                     <button onclick="ejecutarPublicacion()" style="background: #16a34a; width: 100%; margin-top: 25px; padding: 16px; font-size: 16px; font-weight:800; color: white; border: none; border-radius: 8px; cursor: pointer;">
-                        🚀 Confirmar y Publicar Lote (Inteligente: Salta lo repetido)
+                        🚀 Confirmar y Publicar Lote Seleccionado
                     </button>
                 </div>
 
@@ -639,7 +648,7 @@ HTML_INTERFACE = """
             <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:20px; border-top:1px solid #e2e8f0; padding-top:15px;">
                 <button onclick="cerrarModalCategorias()" style="background:#64748b; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">Cancelar</button>
                 <button onclick="confirmarYCargarInventario()" style="background:#16a34a; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">
-                    🚀 Confirmar y Cargar Tabla de Publicación
+                    🚀 Confirmar y Analizar Inventario
                 </button>
             </div>
         </div>
@@ -879,12 +888,25 @@ HTML_INTERFACE = """
         }
 
         // ==========================================
-        // AGRUPADOR EN ACORDEON DE CATEGORIAS
+        // AGRUPADOR Y DOBLE CHECKBOX
         // ==========================================
         function toggleCatGrupo(clase) {
             document.querySelectorAll('.' + clase).forEach(el => {
                 el.style.display = (el.style.display === 'none') ? 'table-row' : 'none';
             });
+        }
+
+        function toggleCategory(event, checkbox) {
+            event.stopPropagation(); // Evitar que el clic cierre el acordeon
+            const targetClass = checkbox.getAttribute('data-target');
+            document.querySelectorAll('.' + targetClass + ' .prod-check').forEach(cb => {
+                cb.checked = checkbox.checked;
+            });
+        }
+
+        function toggleAll(source) {
+            // Selecciona tanto los productos como los checks maestros de categoría
+            document.querySelectorAll('.prod-check, .cat-header input[type="checkbox"]').forEach(cb => cb.checked = source.checked);
         }
 
         async function verificarTokens() {
@@ -1304,7 +1326,7 @@ HTML_INTERFACE = """
         }
 
         // ==========================================
-        // PROCESAMIENTO MAESTRO DE LOTES CON ACORDEON
+        // REPORTE DE AUDITORÍA Y CARGA DE INVENTARIO
         // ==========================================
         async function confirmarYCargarInventario() {
             cerrarModalCategorias();
@@ -1327,6 +1349,7 @@ HTML_INTERFACE = """
             formData.append('col_stk', document.getElementById('map-stk').value);
 
             document.getElementById('tabla-container').style.display = 'none';
+            document.getElementById('resumen-reporte-box').style.display = 'none';
             document.getElementById('loader-zona').style.display = 'block';
             document.getElementById('spinner-percentage').innerText = "0%";
             document.getElementById('loader-mensaje').innerText = "Iniciando sincronización...";
@@ -1356,8 +1379,11 @@ HTML_INTERFACE = """
                     const catIdClase = 'cat-grp-' + data.id.replace(/[^a-zA-Z0-9]/g, '');
                     
                     tbody.innerHTML += `
-                        <tr class="cat-header" onclick="toggleCatGrupo('${catIdClase}')" style="background: #e2e8f0; cursor: pointer; border-bottom: 2px solid #cbd5e1;">
-                            <td colspan="7" style="padding: 12px; font-size: 14px;">
+                        <tr class="cat-header" style="background: #e2e8f0; border-bottom: 2px solid #cbd5e1;">
+                            <td style="padding: 12px; width: 30px;">
+                                <input type="checkbox" checked title="Seleccionar toda la categoría" data-target="${catIdClase}" onclick="toggleCategory(event, this)">
+                            </td>
+                            <td colspan="6" onclick="toggleCatGrupo('${catIdClase}')" style="padding: 12px; font-size: 14px; cursor: pointer;">
                                 <span style="font-size:16px;">📂</span> 
                                 <b style="color: #0f172a;">${catName}</b> 
                                 <span style="color: #64748b; font-size: 12px;">(${data.items.length} artículos) - Clic para expandir / contraer</span>
@@ -1453,8 +1479,19 @@ HTML_INTERFACE = """
                     });
                 }
 
+                // PANEL DE REPORTE
+                const repBox = document.getElementById('resumen-reporte-box');
+                document.getElementById('texto-resumen-reporte').innerHTML = `
+                    <b>📊 Reporte de Auditoría de Inventario:</b><br>
+                    • Se escanearon <b>${resultado.total_leidos}</b> artículos en el rango de filas seleccionado.<br>
+                    • <b>${resultado.total_aprobados}</b> artículos pasaron los filtros y están listos para ser publicados.<br>
+                    • <b style="color:#b91c1c;">${resultado.total_omitidos}</b> artículos fueron ignorados (por duplicidad, falta de título, o porque no coinciden con la categoría).<br><br>
+                    <a href="/api/descargar-reporte/${resultado.archivo_reporte}" target="_blank" style="background:#166534; color:white; padding:8px 16px; border-radius:6px; font-weight:bold; text-decoration:none; display:inline-block;">📥 Descargar Reporte Completo en Excel</a>
+                `;
+                repBox.style.display = 'block';
                 document.getElementById('tabla-container').style.display = 'block';
-                consola.innerText = `✅ ¡Sincronización completa! ${resultado.productos.length} artículos listos.`;
+                
+                consola.innerHTML = `✅ Sincronización completa. Revisa el reporte arriba.`;
             } catch(e) {
                 consola.innerText = "❌ Error en sincronización: " + e;
             } finally {
@@ -2012,11 +2049,17 @@ def previsualizar_archivo(
     productos_activos = []
     cache_categorias_adivinadas = {}
     
+    # ---- INICIO MOTOR DE REPORTES ----
+    reporte_filas = []
+    aprobados_count = 0
+    omitidos_count = 0
+    # ----------------------------------
+
     for indice, item in enumerate(filas_rango):
         time.sleep(0.01)
         porcentaje_actual = int(20 + ((indice + 1) / max(1, total_filas)) * 75)
         
-        titulo = item["Titulo"]
+        titulo = str(item.get("Titulo", "")).strip()
         titulo_norm = titulo.lower()
 
         estado_cuentas = {}
@@ -2033,21 +2076,16 @@ def previsualizar_archivo(
                 estado_cuentas[nom_c] = "LIBRE"
                 existe_en_todas = False
 
-        if filtrar_duplicados == "true":
-            if cuenta == "TODAS" and existe_en_todas:
-                continue
-            elif cuenta != "TODAS" and existe_en_seleccionada:
-                continue
+        sku = item.get("SKU", "")
+        modelo = item.get("Modelo", "")
+        precio = item.get("Precio", 0)
+        stock = item.get("Stock", 0)
+        marca = item.get("Marca", "")
+        cat_origen = item.get("CategoriaOrigen", "")
+        nom_hoja = item.get("Hoja", "")
 
-        sku = item["SKU"]
-        modelo = item["Modelo"]
-        precio = item["Precio"]
-        stock = item["Stock"]
-        marca = item["Marca"]
-        cat_origen = item["CategoriaOrigen"]
-        nom_hoja = item["Hoja"]
-
-        if headers_ref:
+        # Adivinar Categoría (Necesario para el reporte)
+        if headers_ref and titulo:
             if titulo in cache_categorias_adivinadas:
                 cat_id, cat_nombre = cache_categorias_adivinadas[titulo]
             else:
@@ -2056,9 +2094,37 @@ def previsualizar_archivo(
         else:
             cat_id, cat_nombre = "MLV-DESCONOCIDA", "Categoría General"
 
-        if not coincide_con_categoria_elegida(titulo, cat_id, categoria_filtro):
+        # Validaciones de Estado para Reporte
+        motivo_estado = "✅ Aprobado (Listo para Publicar)"
+        
+        if not titulo or titulo == "nan":
+            motivo_estado = "🚫 Omitido (Fila vacía o sin Título)"
+        else:
+            if filtrar_duplicados == "true":
+                if cuenta == "TODAS" and existe_en_todas:
+                    motivo_estado = "🚫 Omitido (Ya publicado en todas las cuentas)"
+                elif cuenta != "TODAS" and existe_en_seleccionada:
+                    motivo_estado = "🚫 Omitido (Ya publicado en la cuenta destino)"
+            
+            if motivo_estado.startswith("✅") and not coincide_con_categoria_elegida(titulo, cat_id, categoria_filtro):
+                motivo_estado = f"🚫 Omitido (No coincide con la categoría filtro: {categoria_filtro})"
+
+        # Añadir al Excel de Reporte
+        reporte_filas.append({
+            "Fila Excel": idx_inicio + indice + 2,
+            "SKU": sku,
+            "Título del Producto": titulo,
+            "Categoría Detectada": cat_nombre,
+            "Precio": precio,
+            "Stock": stock,
+            "Estado": motivo_estado
+        })
+
+        if "🚫" in motivo_estado:
+            omitidos_count += 1
             continue
 
+        aprobados_count += 1
         actualizar_progreso(porcentaje_actual, f"[{indice+1}/{total_filas}] Sincronizando: {titulo[:25]}...")
             
         imagen_emparejada = emparejar_imagen_local(modelo, sku, titulo)
@@ -2073,11 +2139,30 @@ def previsualizar_archivo(
             "Hoja": nom_hoja, "CategoriaOrigen": cat_origen
         })
 
+    # Guardar Reporte en Excel
+    df_rep = pd.DataFrame(reporte_filas)
+    nombre_rep = f"Reporte_Sincronizacion_{int(time.time())}.xlsx"
+    ruta_rep = os.path.join(CARPETA_REPORTES, nombre_rep)
+    df_rep.to_excel(ruta_rep, index=False)
+
     if os.path.exists(temp_filename): os.remove(temp_filename)
     actualizar_progreso(100, "¡Sincronización Finalizada!")
     PROGRESO_ACTUAL["activo"] = False
     
-    return {"productos": sorted(productos_activos, key=lambda x: x["CategoriaNombre"])}
+    return {
+        "productos": sorted(productos_activos, key=lambda x: x["CategoriaNombre"]),
+        "total_leidos": total_filas,
+        "total_aprobados": aprobados_count,
+        "total_omitidos": omitidos_count,
+        "archivo_reporte": nombre_rep
+    }
+
+@app.get("/api/descargar-reporte/{nombre_archivo}")
+def descargar_reporte(nombre_archivo: str):
+    ruta = os.path.join(CARPETA_REPORTES, nombre_archivo)
+    if os.path.exists(ruta):
+        return FileResponse(ruta, filename=nombre_archivo)
+    return {"error": "Archivo no encontrado"}
 
 @app.post("/publicar-lote")
 def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
@@ -2298,6 +2383,7 @@ def generar_catalogo_endpoint(
 
     actualizar_progreso(95, "Ensamblando diseño del catálogo HTML...")
 
+    base_ws = "https://" + "wa.me/"
     num_telefono = "".join(filter(str.isdigit, whatsapp))
     if not num_telefono.startswith("58"):
         num_telefono = "58" + num_telefono.lstrip("0")
