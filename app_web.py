@@ -43,20 +43,6 @@ os.makedirs(CARPETA_CATALOGOS, exist_ok=True)
 CARPETA_REPORTES = "reportes"
 os.makedirs(CARPETA_REPORTES, exist_ok=True)
 
-try:
-    from google import genai
-    USAR_IA = True
-except Exception:
-    USAR_IA = False
-
-def obtener_cliente_ia():
-    if not USAR_IA:
-        return None
-    try:
-        return genai.Client()
-    except Exception:
-        return None
-
 PROGRESO_ACTUAL = {
     "porcentaje": 0,
     "mensaje": "Iniciando...",
@@ -162,12 +148,36 @@ def analizar_error_ml(respuesta):
     try:
         error_data = respuesta.json()
         causas = error_data.get('cause', [])
-        if isinstance(causas, list) and len(causas) > 0:
-            msg_list = [c.get('message', str(c)) if isinstance(c, dict) else str(c) for c in causas]
-            return " | ".join(msg_list)
-        return str(error_data.get('message', error_data.get('error', 'Error desconocido de Mercado Libre')))
+        if not causas and 'message' in error_data:
+            causas = [{"message": error_data['message']}]
+        
+        msg_list = []
+        for c in causas:
+            msg = c.get('message', str(c)) if isinstance(c, dict) else str(c)
+            
+            if "500 pixeles" in msg or "500 pixels" in msg or "minimum size" in msg:
+                msg_limpio = "📸 Error: Las fotos son muy pequeñas (Mínimo 500x500px)."
+            elif "The provided unit is not valid" in msg or "The provided number is not valid" in msg:
+                match = re.search(r'Attribute (.*?) with value', msg)
+                attr = match.group(1) if match else "Un atributo"
+                msg_limpio = f"📏 Falta unidad en '{attr}' (Debe incluir GB, pulgadas, Hz, etc)."
+            elif "is not valid, item values" in msg:
+                match = re.search(r'Attribute \[(.*?)\]', msg)
+                attr = match.group(1) if match else "Un atributo"
+                msg_limpio = f"❌ Valor no aceptado por ML en '{attr}' (Evita usar 'N/A' o 'No Aplica')."
+            elif "is required and was omitted" in msg:
+                match = re.search(r'Attribute (.*?) ', msg)
+                attr = match.group(1) if match else "Un atributo"
+                msg_limpio = f"⚠️ Falta atributo obligatorio: '{attr}'."
+            else:
+                msg_limpio = f"❌ {msg}"
+            
+            if msg_limpio not in msg_list:
+                msg_list.append(msg_limpio)
+        
+        return " | ".join(msg_list)
     except Exception:
-        return f"Error HTTP {respuesta.status_code}: {respuesta.text[:150]}"
+        return f"Error HTTP {respuesta.status_code}: Conexión rechazada por Mercado Libre."
 
 def construir_atributos_dinamicos_dict(prod, attr_adicionales, headers):
     lista = [
@@ -194,7 +204,6 @@ def construir_atributos_dinamicos_dict(prod, attr_adicionales, headers):
     return lista
 
 def obtener_diccionario_publicados_ml(headers):
-    """Obtiene un diccionario {titulo_minuscula: permalink_url} de la cuenta."""
     try:
         url_me = f"{API_ML}/users/me"
         res_me = requests.get(url_me, headers=headers)
@@ -1070,27 +1079,27 @@ HTML_INTERFACE = """
             const modelo = document.getElementById('mod-'+idx).value || 'Universal';
             const descCustom = document.getElementById('desc-init-'+idx).value;
             
-            let bloqueTecnico = "========================================\n";
-            bloqueTecnico += "ESPECIFICACIONES TÉCNICAS Y CARACTERÍSTICAS\n";
-            bloqueTecnico += "========================================\n";
-            bloqueTecnico += `• MARCA: ${marca}\n`;
-            bloqueTecnico += `• MODELO: ${modelo}\n`;
+            let bloqueTecnico = "========================================\\n";
+            bloqueTecnico += "ESPECIFICACIONES TÉCNICAS Y CARACTERÍSTICAS\\n";
+            bloqueTecnico += "========================================\\n";
+            bloqueTecnico += `• MARCA: ${marca}\\n`;
+            bloqueTecnico += `• MODELO: ${modelo}\\n`;
             
             const adic = atributosAdicionalesPorFila[idx] || {};
             for (const [k, v] of Object.entries(adic)) {
                 let claveLimpia = k.replace(/_/g, ' ');
-                bloqueTecnico += `• ${claveLimpia}: ${v}\n`;
+                bloqueTecnico += `• ${claveLimpia}: ${v}\\n`;
             }
-            bloqueTecnico += "========================================\n\n";
+            bloqueTecnico += "========================================\\n\\n";
 
             const BLOQUE_SUPERIOR = "SOMOS TIENDA FÍSICA, Empresa Mayorista Líder en el Mercado de la Computación Producto 100% de calidad";
-            const BLOQUE_INFERIOR = ".\nPor Favor Verifique la disponibilidad antes de ofertar\nPor Favor Verifique la disponibilidad antes de ofertar\nPor Favor Verifique la disponibilidad antes de ofertar\n**************************************************************************************************\n- Emitimos factura LEGAL\n- Trabajamos con agentes de retención\n- Enviamos a todo el País.\n**************************************************************************************************\nCOMENTARIOS:\n- Realice todas las preguntas necesarias Antes de ofertar.\n- El equipo de ventas está a tu disposición para responder tus consultas.\n- Te invitamos a que solo ofertes cuando estés seguro de realizar la compra.\n- La disponibilidad y precio del producto publicado solo se garantiza por un lapso de 24hrs luego de haber solicitado la compra.\n- Si presentas algún inconveniente durante el proceso de compras estaremos a tu completa disposición para atenderte y solventar la situación. Deseamos que tu compra con nosotros siempre genere una calificación positiva.\n****************************************************************************************************\nHORARIO DE TRABAJO\n****************************************************\nDe Lunes A Viernes\nDe 8:30am A 5:30pm";
+            const BLOQUE_INFERIOR = ".\\nPor Favor Verifique la disponibilidad antes de ofertar\\nPor Favor Verifique la disponibilidad antes de ofertar\\nPor Favor Verifique la disponibilidad antes de ofertar\\n**************************************************************************************************\\n- Emitimos factura LEGAL\\n- Trabajamos con agentes de retención\\n- Enviamos a todo el País.\\n**************************************************************************************************\\nCOMENTARIOS:\\n- Realice todas las preguntas necesarias Antes de ofertar.\\n- El equipo de ventas está a tu disposición para responder tus consultas.\\n- Te invitamos a que solo ofertes cuando estés seguro de realizar la compra.\\n- La disponibilidad y precio del producto publicado solo se garantiza por un lapso de 24hrs luego de haber solicitado la compra.\\n- Si presentas algún inconveniente durante el proceso de compras estaremos a tu completa disposición para atenderte y solventar la situación. Deseamos que tu compra con nosotros siempre genere una calificación positiva.\\n****************************************************************************************************\\nHORARIO DE TRABAJO\\n****************************************************\\nDe Lunes A Viernes\\nDe 8:30am A 5:30pm";
 
-            let descFinal = `${BLOQUE_SUPERIOR}\n\n`;
-            descFinal += `${titulo}\n${titulo}\n${titulo}\n\n`;
+            let descFinal = `${BLOQUE_SUPERIOR}\\n\\n`;
+            descFinal += `${titulo}\\n${titulo}\\n${titulo}\\n\\n`;
             
             if (descCustom && descCustom.trim().length > 5) {
-                descFinal += `${descCustom}\n\n`;
+                descFinal += `${descCustom}\\n\\n`;
             }
             
             descFinal += bloqueTecnico;
@@ -1121,7 +1130,7 @@ HTML_INTERFACE = """
                 let htmlContent = `
                     <div style="margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; background: #e0f2fe; padding: 12px; border-radius: 8px; border: 1px solid #7dd3fc;">
                         <span style="font-size: 13px; font-weight: 800; color: #0369a1;">🤖 Relleno Inteligente de Ficha Técnica</span>
-                        <button type="button" onclick="ejecutarAutollenadoIA(${idx})" style="background: #0284c7; font-size: 11px; padding: 6px 14px; color:white; border:none; border-radius:6px; cursor:pointer;">
+                        <button type="button" onclick="ejecutarAutollenadoIA(${idx}, this)" style="background: #0284c7; font-size: 11px; padding: 6px 14px; color:white; border:none; border-radius:6px; cursor:pointer;">
                             ⚡ Autollenar con IA
                         </button>
                     </div>
@@ -1199,15 +1208,16 @@ HTML_INTERFACE = """
             }
         }
 
-        async function ejecutarAutollenadoIA(idx) {
+        async function ejecutarAutollenadoIA(idx, btn) {
             const titVal = document.getElementById('tit-'+idx).value;
             const catId = document.getElementById('cat-'+idx).value;
+            const skuVal = document.getElementById('sku-'+idx).value;
 
             const formData = new FormData();
             formData.append('titulo', titVal);
             formData.append('cat_id', catId);
+            formData.append('sku', skuVal);
 
-            const btn = event.target;
             const textOrig = btn.innerText;
             btn.innerText = "⏳ Analizando...";
             btn.disabled = true;
@@ -1229,7 +1239,18 @@ HTML_INTERFACE = """
                             inputCampo.style.backgroundColor = "#dcfce7";
                         }
                     }
+
+                    if (data.descripcion && data.descripcion.trim() !== "") {
+                        document.getElementById('desc-init-'+idx).value = data.descripcion;
+                        const badge = document.getElementById('desc-tag-'+idx);
+                        badge.innerText = "✨ Desc. IA Generada";
+                        badge.style.backgroundColor = "#fef08a";
+                        badge.style.color = "#854d0e";
+                    }
+
                     actualizarResumenAtributos(idx);
+                } else if (data.error) {
+                    alert("Error de IA: " + data.error);
                 }
             } catch(e) {
                 alert("No se pudieron autollenar algunos atributos.");
@@ -1307,7 +1328,7 @@ HTML_INTERFACE = """
                 previewArea.innerHTML += `
                     <div class="thumb-wrap">
                         <img src="${b64}">
-                        <button class="del-photo-btn" onclick="eliminarFotoFila(${idx}, pos})" title="Eliminar foto">✕</button>
+                        <button class="del-photo-btn" onclick="eliminarFotoFila(${idx}, ${pos})" title="Eliminar foto">✕</button>
                     </div>
                 `;
             });
@@ -1478,8 +1499,11 @@ HTML_INTERFACE = """
                                 : `<span class="account-badge badge-libre">${nomCuenta}: Libre</span>`;
                         }
 
+                        // Formatear precio estricto a 2 decimales para la UI
+                        const precioFormateado = parseFloat(prod.Precio || 0).toFixed(2);
+
                         tbody.innerHTML += `
-                            <tr class="item-row ${catIdClase}">
+                            <tr id="row-${idx}" class="item-row ${catIdClase}">
                                 <td><input type="checkbox" class="prod-check" data-idx="${idx}" checked></td>
                                 <td>
                                     <input type="text" id="tit-${idx}" value="${prod.Titulo}" maxlength="60" style="margin-bottom:4px; font-weight:bold;">
@@ -1490,7 +1514,7 @@ HTML_INTERFACE = """
                                     <input type="hidden" id="cat-${idx}" value="${prod.Categoria_ID}">
                                     <input type="hidden" id="desc-init-${idx}" value="${prod.DescripcionCustom || ''}">
                                 </td>
-                                <td><input type="number" id="pre-${idx}" value="${prod.Precio}" step="0.01"></td>
+                                <td><input type="number" id="pre-${idx}" value="${precioFormateado}" step="0.01"></td>
                                 <td><input type="number" id="stk-${idx}" value="${prod.Stock}"></td>
                                 <td>
                                     <select id="expo-${idx}" class="select-exposicion attr-select" style="margin-bottom:5px; font-weight:bold;">
@@ -1585,6 +1609,12 @@ HTML_INTERFACE = """
         }
 
         async function ejecutarPublicacion() {
+            // Limpiar errores previos visuales
+            document.querySelectorAll('.item-row').forEach(row => {
+                row.style.border = "";
+                row.style.backgroundColor = "";
+            });
+
             const seleccionados = [];
             document.querySelectorAll('.prod-check:checked').forEach(cb => {
                 const idx = cb.dataset.idx;
@@ -1593,9 +1623,13 @@ HTML_INTERFACE = """
                 const razonGtin = document.getElementById('gtin-razon-'+idx).value;
                 let gtinFinal = (razonGtin === 'CUSTOM') ? document.getElementById('gtin-'+idx).value : 'OMITIR';
 
+                // Forzar 2 decimales limpios antes de enviar
+                let precioLimpio = parseFloat(document.getElementById('pre-'+idx).value || 0).toFixed(2);
+
                 seleccionados.push({
+                    "idx": idx,
                     "Titulo": document.getElementById('tit-'+idx).value,
-                    "Precio": parseFloat(document.getElementById('pre-'+idx).value),
+                    "Precio": parseFloat(precioLimpio),
                     "Stock": parseInt(document.getElementById('stk-'+idx).value),
                     "Categoria_ID": document.getElementById('cat-'+idx).value,
                     "Exposicion": document.getElementById('expo-'+idx).value,
@@ -1631,6 +1665,32 @@ HTML_INTERFACE = """
                 });
                 const resData = await response.json();
                 consola.innerText = resData.detalles.join('\\n');
+
+                if (resData.errores_idx && Object.keys(resData.errores_idx).length > 0) {
+                    let fallos = 0;
+                    for (const [idxError, errorMsg] of Object.entries(resData.errores_idx)) {
+                        const fila = document.getElementById('row-' + idxError);
+                        if(fila) {
+                            fila.style.borderLeft = "6px solid #ef4444";
+                            fila.style.backgroundColor = "#fef2f2";
+                        }
+                        
+                        const resumenDiv = document.getElementById('resumen-attr-'+idxError);
+                        resumenDiv.innerHTML = `
+                            <div style="background:#fee2e2; border:1px solid #fca5a5; padding:6px; border-radius:6px; margin-top:6px;">
+                                <span style="color:#b91c1c; font-weight:bold; font-size:11px;">❌ ${errorMsg}</span><br>
+                                <button onclick="ejecutarAutollenadoIA(${idxError}, this)" style="background:#b91c1c; color:white; border:none; padding:4px 8px; border-radius:4px; font-size:10px; cursor:pointer; margin-top:6px; font-weight:bold;">
+                                    🤖 Corregir Errores con IA
+                                </button>
+                            </div>
+                        `;
+                        fallos++;
+                    }
+                    alert(`Hubo errores con ${fallos} artículos. Han sido resaltados en color rojo en tu panel para que uses la corrección IA.`);
+                } else {
+                    alert("¡Todo el lote se publicó de forma perfecta sin errores!");
+                }
+
             } catch(e) {
                 consola.innerText = "❌ Error subiendo lote: " + e;
             } finally {
@@ -1841,7 +1901,7 @@ HTML_INTERFACE = """
             const checks = document.querySelectorAll('.prod-check:checked');
             if (!checks.length) return alert('No hay artículos seleccionados para analizar.');
             
-            if (!confirm(`¿Iniciar análisis IA para ${checks.length} artículos? Esto consumirá tokens de OpenRouter y tomará un momento.`)) return;
+            if (!confirm(`¿Iniciar análisis IA para ${checks.length} artículos? Generará fichas y descripciones comerciales.`)) return;
 
             const btn = document.getElementById('btn-bulk-ia');
             const textoOriginal = btn.innerHTML;
@@ -1852,6 +1912,7 @@ HTML_INTERFACE = """
                 const idx = checks[i].dataset.idx;
                 const titVal = document.getElementById('tit-'+idx).value;
                 const catId = document.getElementById('cat-'+idx).value;
+                const skuVal = document.getElementById('sku-'+idx).value;
                 const resumenDiv = document.getElementById('resumen-attr-'+idx);
 
                 resumenDiv.innerHTML = "⏳ <b>DeepSeek analizando...</b>";
@@ -1859,6 +1920,7 @@ HTML_INTERFACE = """
                 const fd = new FormData();
                 fd.append('titulo', titVal);
                 fd.append('cat_id', catId);
+                fd.append('sku', skuVal);
 
                 try {
                     const res = await fetch('/api/autollenar-atributos-ia', { method: 'POST', body: fd });
@@ -1870,6 +1932,15 @@ HTML_INTERFACE = """
                             const idUpper = String(idAttr).trim().toUpperCase();
                             atributosAdicionalesPorFila[idx][idUpper] = valIA;
                         }
+
+                        if (data.descripcion && data.descripcion.trim() !== "") {
+                            document.getElementById('desc-init-'+idx).value = data.descripcion;
+                            const badge = document.getElementById('desc-tag-'+idx);
+                            badge.innerText = "✨ Desc. IA Generada";
+                            badge.style.backgroundColor = "#fef08a";
+                            badge.style.color = "#854d0e";
+                        }
+
                         actualizarResumenAtributos(idx);
                     } else if (data.error) {
                         resumenDiv.innerHTML = `❌ <span style="color:red;">Error: ${data.error}</span>`;
@@ -1878,8 +1949,7 @@ HTML_INTERFACE = """
                     resumenDiv.innerText = "❌ Fallo de red con la IA";
                 }
                 
-                // Pausa de medio segundo entre productos para no saturar la API
-                await new Promise(r => setTimeout(r, 500));
+                await new Promise(r => setTimeout(r, 800));
             }
 
             btn.innerHTML = textoOriginal;
@@ -2006,7 +2076,8 @@ def endpoint_galeria_local():
 @app.post("/api/autollenar-atributos-ia")
 def autollenar_atributos_ia(
     titulo: str = Form(...),
-    cat_id: str = Form(...)
+    cat_id: str = Form(...),
+    sku: str = Form("")
 ):
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
@@ -2032,7 +2103,7 @@ def autollenar_atributos_ia(
                 })
 
         if not relevantes:
-            return {"atributos": {}}
+            return {"atributos": {}, "descripcion": ""}
 
         lista_obligatorios = [f"- {a['id']} ({a['name']})" for a in relevantes if a["required"]]
         lista_opcionales = [f"- {a['id']} ({a['name']})" for a in relevantes if not a["required"]][:12]
@@ -2040,20 +2111,28 @@ def autollenar_atributos_ia(
         texto_oblig = "\n".join(lista_obligatorios) if lista_obligatorios else "Ninguno estrictamente obligatorio."
         texto_opcio = "\n".join(lista_opcionales) if lista_opcionales else "Ninguno adicional."
 
-        prompt = f"""Dado el siguiente título de un producto tecnológico/electrónico:
-"{titulo}"
+        prompt = f"""Eres un experto catalogador y redactor de ventas para Mercado Libre.
+Dado el siguiente producto tecnológico/electrónico:
+- Título: "{titulo}"
+- SKU / Número de Parte: "{sku}"
 
-PRIORIDAD MÁXIMA - Extrae o deduce lógicamente los siguientes atributos OBLIGATORIOS:
+Tu tarea es doble:
+1. Redactar una DESCRIPCIÓN COMERCIAL atractiva, persuasiva y detallada (aprox. 2 párrafos) que resalte los beneficios y usos del producto.
+2. Extraer, deducir o investigar los atributos técnicos de Mercado Libre basándote en el Título, SKU y la descripción que acabas de idear.
+
+Atributos OBLIGATORIOS (DEBES incluirlos en el JSON):
 {texto_oblig}
 
-Atributos OPCIONALES (solo si son muy evidentes):
+Atributos OPCIONALES (inclúyelos SOLO si tienes información exacta):
 {texto_opcio}
 
-Reglas estrictas:
-- Responde SOLO con un JSON válido. NADA de texto adicional, ni etiquetas json.
-- Claves: EXACTAMENTE el ID del atributo (ej. COLOR).
-- Para los OBLIGATORIOS, intenta deducirlos de forma lógica si no están explícitos en el título (ej. Color: "Negro" suele ser estándar, Material: "Plástico" o "Metal").
-- Si no puedes deducir uno bajo ninguna lógica, déjalo vacío "".
+Reglas estrictas e inquebrantables:
+1. Responde SOLO con un JSON válido. NADA de texto adicional (sin etiquetas de código).
+2. El JSON debe contener la clave exacta "DESCRIPCION_COMERCIAL".
+3. Las demás claves deben ser EXACTAMENTE el ID del atributo técnico.
+4. OBLIGATORIOS: ¡Nunca vacíos! Si no sabes el dato, usa valores como "Genérico", "Universal", o "Estándar". (Nunca "N/A").
+5. OPCIONALES: Si no sabes la información de un opcional, SIMPLEMENTE NO LO INCLUYAS en el JSON.
+6. REGLA DE ORO PARA MEDIDAS: Todo atributo que represente capacidad, tamaño, longitud o frecuencia (RAM, disco duro, pantalla, Hz, voltaje) DEBE INCLUIR LA UNIDAD DE MEDIDA (ej. "8 GB", "1 TB", "15.6 pulgadas", "144 Hz", "110V"). NUNCA uses "No Aplica" o números solos como "15.6" en estos campos numéricos. Si el atributo es obligatorio y no sabes el valor, inventa un valor estándar realista de la industria en lugar de omitirlo o poner texto inválido.
 """
 
         headers_or = {
@@ -2066,11 +2145,11 @@ Reglas estrictas:
         payload_or = {
             "model": "deepseek/deepseek-chat",
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.1
+            "temperature": 0.2
         }
 
         url_openrouter = "https://" + "openrouter.ai/api/v1/chat/completions"
-        res_or = requests.post(url_openrouter, headers=headers_or, json=payload_or, timeout=12)
+        res_or = requests.post(url_openrouter, headers=headers_or, json=payload_or, timeout=15)
         
         if res_or.status_code != 200:
             return {"error": f"Error API OpenRouter ({res_or.status_code})"}
@@ -2084,6 +2163,8 @@ Reglas estrictas:
 
         datos_ia = json.loads(raw_text)
 
+        descripcion_ia = datos_ia.pop("DESCRIPCION_COMERCIAL", "")
+
         ids_validos = {a["id"] for a in relevantes}
         atributos_finales = {}
         for k, v in datos_ia.items():
@@ -2091,7 +2172,7 @@ Reglas estrictas:
             if k_upper in ids_validos and v and str(v).strip() != "":
                 atributos_finales[k_upper] = str(v).strip()
 
-        return {"atributos": atributos_finales}
+        return {"atributos": atributos_finales, "descripcion": descripcion_ia}
 
     except Exception as e:
         return {"error": f"Fallo en IA: {str(e)}"}
@@ -2189,11 +2270,9 @@ def previsualizar_archivo(
     productos_activos = []
     cache_categorias_adivinadas = {}
     
-    # ---- INICIO MOTOR DE REPORTES ----
     reporte_filas = []
     aprobados_count = 0
     omitidos_count = 0
-    # ----------------------------------
 
     for indice, item in enumerate(filas_rango):
         time.sleep(0.01)
@@ -2218,13 +2297,18 @@ def previsualizar_archivo(
 
         sku = item.get("SKU", "")
         modelo = item.get("Modelo", "")
-        precio = item.get("Precio", 0)
+        
+        # Redondear el precio a 2 decimales limpios
+        try:
+            precio = round(float(item.get("Precio", 0)), 2)
+        except Exception:
+            precio = 0.0
+
         stock = item.get("Stock", 0)
         marca = item.get("Marca", "")
         cat_origen = item.get("CategoriaOrigen", "")
         nom_hoja = item.get("Hoja", "")
 
-        # Adivinar Categoría (Necesario para el reporte)
         if headers_ref and titulo:
             if titulo in cache_categorias_adivinadas:
                 cat_id, cat_nombre = cache_categorias_adivinadas[titulo]
@@ -2234,7 +2318,6 @@ def previsualizar_archivo(
         else:
             cat_id, cat_nombre = "MLV-DESCONOCIDA", "Categoría General"
 
-        # Validaciones de Estado para Reporte
         motivo_estado = "✅ Aprobado (Listo para Publicar)"
         
         if not titulo or titulo == "nan":
@@ -2249,7 +2332,6 @@ def previsualizar_archivo(
             if motivo_estado.startswith("✅") and not coincide_con_categoria_elegida(titulo, cat_id, categoria_filtro):
                 motivo_estado = f"🚫 Omitido (No coincide con la categoría filtro: {categoria_filtro})"
 
-        # Añadir al Excel de Reporte
         reporte_filas.append({
             "Fila Excel": idx_inicio + indice + 2,
             "SKU": sku,
@@ -2279,7 +2361,6 @@ def previsualizar_archivo(
             "Hoja": nom_hoja, "CategoriaOrigen": cat_origen
         })
 
-    # Guardar Reporte en Excel
     df_rep = pd.DataFrame(reporte_filas)
     nombre_rep = f"Reporte_Sincronizacion_{int(time.time())}.xlsx"
     ruta_rep = os.path.join(CARPETA_REPORTES, nombre_rep)
@@ -2309,6 +2390,7 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
     PROGRESO_ACTUAL["activo"] = True
     archivos_destino = listar_archivos_token() if cuenta == "TODAS" else [cuenta]
     logs_totales = []
+    errores_interactivos = {}
     total_items = len(productos) * len(archivos_destino)
     procesados = 0
 
@@ -2332,6 +2414,7 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
             procesados += 1
             porcentaje = int((procesados / max(1, total_items)) * 100)
             titulo_original = prod['Titulo'][:60].strip()
+            idx_front = prod.get('idx', '')
             
             if titulo_original.lower() in titulos_existentes_cuenta:
                 logs_totales.append(f"⏭️ [{nombre_perfil}] OMITIDO: '{titulo_original[:20]}...' ya existe en esta cuenta.")
@@ -2341,7 +2424,6 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
 
             titulo_x3 = f"{titulo_original}\n{titulo_original}\n{titulo_original}\n"
             
-            # --- NUEVA INYECCIÓN DE FICHA TÉCNICA EN LA DESCRIPCIÓN ---
             attr_adicionales = prod.get('AtributosDinamicos', {})
             bloque_tecnico = "========================================\n"
             bloque_tecnico += "ESPECIFICACIONES TÉCNICAS Y CARACTERÍSTICAS\n"
@@ -2363,7 +2445,6 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                 "text": descripcion_estructurada
             }
 
-            attr_adicionales = prod.get('AtributosDinamicos', {})
             atributos_payload = construir_atributos_dinamicos_dict(prod, attr_adicionales, headers)
 
             modo_envio = prod.get('Envio', 'not_specified')
@@ -2376,10 +2457,13 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
             else:
                 shipping_payload = {"mode": "me2", "local_pick_up": True, "free_shipping": True}
 
+            # REDONDEO ESTRICTO A MÁXIMO 2 DECIMALES
+            precio_final = round(float(prod['Precio']), 2)
+
             datos_publicacion = {
                 "title": titulo_original,
                 "category_id": prod['Categoria_ID'],
-                "price": prod['Precio'],
+                "price": precio_final,
                 "currency_id": "USD",
                 "available_quantity": prod['Stock'],
                 "buying_mode": "buy_it_now",
@@ -2452,15 +2536,18 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                         else:
                             detalles = analizar_error_ml(res_bypass)
                             logs_totales.append(f"❌ [{nombre_perfil}] Error '{titulo_original[:15]}...': {detalles}")
+                            if idx_front: errores_interactivos[idx_front] = detalles
                     else:
                         detalles = analizar_error_ml(respuesta)
                         logs_totales.append(f"❌ [{nombre_perfil}] Error '{titulo_original[:15]}...': {detalles}")
+                        if idx_front: errores_interactivos[idx_front] = detalles
             except Exception as e_req:
                 logs_totales.append(f"❌ [{nombre_perfil}] Excepción de red/servidor enviando '{titulo_original[:15]}...': {str(e_req)}")
+                if idx_front: errores_interactivos[idx_front] = "Problema de conexión con el servidor ML."
 
     actualizar_progreso(100, "¡Lote Completado!")
     PROGRESO_ACTUAL["activo"] = False
-    return {"detalles": logs_totales}
+    return {"detalles": logs_totales, "errores_idx": errores_interactivos}
 
 @app.post("/api/generar-catalogo")
 def generar_catalogo_endpoint(
@@ -2609,7 +2696,7 @@ def generar_catalogo_endpoint(
         
         for p in items:
             titulo = str(p.get("Titulo", "")).strip()
-            precio = p.get("Precio", 0)
+            precio = round(float(p.get("Precio", 0)), 2)
             sku = str(p.get("SKU", "N/A")).strip()
             stock = p.get("Stock", 0)
             modelo = str(p.get("Modelo", "Universal")).strip()
@@ -2617,7 +2704,7 @@ def generar_catalogo_endpoint(
             img_b64 = emparejar_imagen_local(modelo, sku, titulo)
             img_html = f'<img src="{img_b64}">' if img_b64 else '<div class="no-img">Imagen No Disponible</div>'
 
-            msg_ws = f"Hola {nombre_empresa}, me interesa el producto:\n*{titulo}*\n(SKU: {sku})\nPrecio: ${precio}\n¿Tienen disponibilidad?"
+            msg_ws = f"Hola {nombre_empresa}, me interesa el producto:\n*{titulo}*\n(SKU: {sku})\nPrecio: ${precio:.2f}\n¿Tienen disponibilidad?"
             link_ws = f"{API_WA}/{num_telefono}?text={urllib.parse.quote(msg_ws)}"
 
             link_ml = enlaces_ml.get(titulo.lower())
@@ -2634,7 +2721,7 @@ def generar_catalogo_endpoint(
                             <h3 class="title">{titulo}</h3>
                             
                             <div class="price-wrap">
-                                <div class="price">${float(precio):.2f}</div>
+                                <div class="price">${precio:.2f}</div>
                                 <div class="btn-group">
                                     <a href="{link_ws}" target="_blank" class="btn btn-ws">💬 WhatsApp</a>
                                     {ml_btn_html}
