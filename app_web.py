@@ -469,6 +469,7 @@ HTML_INTERFACE = """
                         <button class="bulk-btn" onclick="aplicarEnvioMasivo()">Aplicar Envío</button>
 
                         <button class="bulk-btn" onclick="abrirModalMasivo()" style="margin-left:auto; background:#7e22ce;">⚡ Llenar Características Lote</button>
+                        <button id="btn-bulk-ia" class="bulk-btn" onclick="autollenarLoteIA()" style="margin-left:8px; background:#2563eb;">🤖 Autollenar Fichas (IA DeepSeek)</button>
                     </div>
 
                     <table class="data-table" id="data-table">
@@ -481,7 +482,7 @@ HTML_INTERFACE = """
                                 <th style="width: 8%;">Precio $</th>
                                 <th style="width: 6%;">Stock</th>
                                 <th style="width: 16%;">Exposición & Envío</th>
-                                <th style="width: 26%;">Ficha Técnica Condensada</th>
+                                <th style="width: 26%;">Ficha Técnica & Descripción Final</th>
                                 <th style="width: 20%;">Gestor de Fotos Local</th>
                             </tr>
                         </thead>
@@ -684,6 +685,21 @@ HTML_INTERFACE = """
             <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
                 <button onclick="cerrarModal()" style="background:#64748b; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">Cancelar</button>
                 <button onclick="guardarAtributosModal()" style="background:#0284c7; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">💾 Guardar Ficha Técnica</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL VISTA PREVIA DESCRIPCION FINAL -->
+    <div id="modal-ver-descripcion" class="modal-overlay">
+        <div class="modal-box" style="width: 750px;">
+            <h3 style="color:#0f172a; margin-bottom: 5px; border-bottom: 2px solid #475569;">👁️ Vista Previa de la Descripción</h3>
+            <p style="font-size:12px; color:#64748b; margin-top:0;">Así se verá el texto final publicado en Mercado Libre, incluyendo la ficha técnica ensamblada por el ERP.</p>
+            
+            <div id="desc-preview-text" style="background:#f8fafc; padding:20px; border:1px solid #cbd5e1; border-radius:8px; height: 350px; overflow-y:auto; font-family: monospace; font-size:12px; white-space: pre-wrap; color:#1e293b;">
+            </div>
+            
+            <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+                <button onclick="document.getElementById('modal-ver-descripcion').style.display='none'" style="background:#64748b; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">Cerrar Vista Previa</button>
             </div>
         </div>
     </div>
@@ -973,6 +989,7 @@ HTML_INTERFACE = """
                     if (descripcionesCSV[skuVal] || descripcionesCSV[titVal]) {
                         matchCount++;
                         document.getElementById('desc-tag-'+idx).innerText = "📄 Desc. CSV Asignada";
+                        document.getElementById('desc-init-'+idx).value = descripcionesCSV[skuVal] || descripcionesCSV[titVal];
                     }
                 });
 
@@ -1042,6 +1059,45 @@ HTML_INTERFACE = """
             if ((idNorm === "COMPATIBLE_MODELS" || idNorm === "LINE" || nomNorm.includes("compatib")) && attrBase.compatibilidad) return attrBase.compatibilidad;
             if ((idNorm === "MATERIAL" || nomNorm.includes("material")) && attrBase.material) return attrBase.material;
             return "";
+        }
+
+        // ==========================================
+        // MODAL VISTA PREVIA DESCRIPCION FINAL
+        // ==========================================
+        function verDescripcion(idx) {
+            const titulo = document.getElementById('tit-'+idx).value;
+            const marca = document.getElementById('mar-'+idx).value || 'Genérico';
+            const modelo = document.getElementById('mod-'+idx).value || 'Universal';
+            const descCustom = document.getElementById('desc-init-'+idx).value;
+            
+            let bloqueTecnico = "========================================\n";
+            bloqueTecnico += "ESPECIFICACIONES TÉCNICAS Y CARACTERÍSTICAS\n";
+            bloqueTecnico += "========================================\n";
+            bloqueTecnico += `• MARCA: ${marca}\n`;
+            bloqueTecnico += `• MODELO: ${modelo}\n`;
+            
+            const adic = atributosAdicionalesPorFila[idx] || {};
+            for (const [k, v] of Object.entries(adic)) {
+                let claveLimpia = k.replace(/_/g, ' ');
+                bloqueTecnico += `• ${claveLimpia}: ${v}\n`;
+            }
+            bloqueTecnico += "========================================\n\n";
+
+            const BLOQUE_SUPERIOR = "SOMOS TIENDA FÍSICA, Empresa Mayorista Líder en el Mercado de la Computación Producto 100% de calidad";
+            const BLOQUE_INFERIOR = ".\nPor Favor Verifique la disponibilidad antes de ofertar\nPor Favor Verifique la disponibilidad antes de ofertar\nPor Favor Verifique la disponibilidad antes de ofertar\n**************************************************************************************************\n- Emitimos factura LEGAL\n- Trabajamos con agentes de retención\n- Enviamos a todo el País.\n**************************************************************************************************\nCOMENTARIOS:\n- Realice todas las preguntas necesarias Antes de ofertar.\n- El equipo de ventas está a tu disposición para responder tus consultas.\n- Te invitamos a que solo ofertes cuando estés seguro de realizar la compra.\n- La disponibilidad y precio del producto publicado solo se garantiza por un lapso de 24hrs luego de haber solicitado la compra.\n- Si presentas algún inconveniente durante el proceso de compras estaremos a tu completa disposición para atenderte y solventar la situación. Deseamos que tu compra con nosotros siempre genere una calificación positiva.\n****************************************************************************************************\nHORARIO DE TRABAJO\n****************************************************\nDe Lunes A Viernes\nDe 8:30am A 5:30pm";
+
+            let descFinal = `${BLOQUE_SUPERIOR}\n\n`;
+            descFinal += `${titulo}\n${titulo}\n${titulo}\n\n`;
+            
+            if (descCustom && descCustom.trim().length > 5) {
+                descFinal += `${descCustom}\n\n`;
+            }
+            
+            descFinal += bloqueTecnico;
+            descFinal += BLOQUE_INFERIOR;
+
+            document.getElementById('desc-preview-text').innerText = descFinal;
+            document.getElementById('modal-ver-descripcion').style.display = 'flex';
         }
 
         // ==========================================
@@ -1251,7 +1307,7 @@ HTML_INTERFACE = """
                 previewArea.innerHTML += `
                     <div class="thumb-wrap">
                         <img src="${b64}">
-                        <button class="del-photo-btn" onclick="eliminarFotoFila(${idx}, ${pos})" title="Eliminar foto">✕</button>
+                        <button class="del-photo-btn" onclick="eliminarFotoFila(${idx}, pos})" title="Eliminar foto">✕</button>
                     </div>
                 `;
             });
@@ -1461,9 +1517,13 @@ HTML_INTERFACE = """
                                     </select>
                                     <input type="text" id="gtin-${idx}" value="${prod.GTIN !== 'N/A' ? prod.GTIN : ''}" style="display:${gtinDisplay}; margin-bottom:4px;">
                                     
-                                    <button type="button" onclick="abrirModal(${idx})" style="background:#0284c7; width:100%; padding:6px; font-size:11px; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold;">
+                                    <button type="button" onclick="abrirModal(${idx})" style="background:#0284c7; width:100%; padding:6px; font-size:11px; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; margin-bottom: 4px;">
                                         ⚡ Llenar Ficha Técnica (Obligatorios)
                                     </button>
+                                    <button type="button" onclick="verDescripcion(${idx})" style="background:#475569; width:100%; padding:6px; font-size:11px; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold;">
+                                        👁️ Ver Descripción Final
+                                    </button>
+                                    
                                     <div id="resumen-attr-${idx}" class="attr-summary">${resumenInit}</div>
                                 </td>
                                 <td>
@@ -1776,6 +1836,56 @@ HTML_INTERFACE = """
                 document.getElementById('cat-loader-zona').style.display = 'none';
             }
         }
+
+        async function autollenarLoteIA() {
+            const checks = document.querySelectorAll('.prod-check:checked');
+            if (!checks.length) return alert('No hay artículos seleccionados para analizar.');
+            
+            if (!confirm(`¿Iniciar análisis IA para ${checks.length} artículos? Esto consumirá tokens de OpenRouter y tomará un momento.`)) return;
+
+            const btn = document.getElementById('btn-bulk-ia');
+            const textoOriginal = btn.innerHTML;
+            btn.innerHTML = '⏳ Procesando Lote con IA...';
+            btn.disabled = true;
+
+            for (let i = 0; i < checks.length; i++) {
+                const idx = checks[i].dataset.idx;
+                const titVal = document.getElementById('tit-'+idx).value;
+                const catId = document.getElementById('cat-'+idx).value;
+                const resumenDiv = document.getElementById('resumen-attr-'+idx);
+
+                resumenDiv.innerHTML = "⏳ <b>DeepSeek analizando...</b>";
+                
+                const fd = new FormData();
+                fd.append('titulo', titVal);
+                fd.append('cat_id', catId);
+
+                try {
+                    const res = await fetch('/api/autollenar-atributos-ia', { method: 'POST', body: fd });
+                    const data = await res.json();
+
+                    if (data.atributos) {
+                        if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
+                        for (const [idAttr, valIA] of Object.entries(data.atributos)) {
+                            const idUpper = String(idAttr).trim().toUpperCase();
+                            atributosAdicionalesPorFila[idx][idUpper] = valIA;
+                        }
+                        actualizarResumenAtributos(idx);
+                    } else if (data.error) {
+                        resumenDiv.innerHTML = `❌ <span style="color:red;">Error: ${data.error}</span>`;
+                    }
+                } catch(e) {
+                    resumenDiv.innerText = "❌ Fallo de red con la IA";
+                }
+                
+                // Pausa de medio segundo entre productos para no saturar la API
+                await new Promise(r => setTimeout(r, 500));
+            }
+
+            btn.innerHTML = textoOriginal;
+            btn.disabled = false;
+            alert("✅ ¡Autollenado masivo completado con éxito!");
+        }
     </script>
 </body>
 </html>
@@ -1898,63 +2008,93 @@ def autollenar_atributos_ia(
     titulo: str = Form(...),
     cat_id: str = Form(...)
 ):
-    cliente_ia = obtener_cliente_ia()
-    if not cliente_ia:
-        return {"error": "La API de Gemini no está configurada en el servidor."}
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        return {"error": "Falta configurar OPENROUTER_API_KEY en tu archivo .env"}
+
     try:
         url_attr = f"{API_ML}/categories/{cat_id}/attributes"
-        res = requests.get(url_attr, timeout=6)
-        if res.status_code != 200:
+        res_ml = requests.get(url_attr, timeout=6)
+        if res_ml.status_code != 200:
             return {"error": "No se pudieron obtener los atributos de Mercado Libre."}
+
+        attrs_ml = res_ml.json()
+        prohibidos = {"BRAND", "MODEL", "SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES"}
         
-        attrs_ml = res.json()
-        PROHIBIDOS = {"BRAND", "MODEL", "SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES"}
-        relevantes = [
-            {"id": a.get("id"), "name": a.get("name"), "hint": a.get("hint", "")}
-            for a in attrs_ml 
-            if a.get("id") not in PROHIBIDOS and not a.get("read_only", False)
-        ][:15]
-        
+        relevantes = []
+        for a in attrs_ml:
+            if a.get("id") not in prohibidos and not a.get("read_only", False):
+                es_requerido = a.get("tags", {}).get("required", False)
+                relevantes.append({
+                    "id": a.get("id"),
+                    "name": a.get("name"),
+                    "required": es_requerido
+                })
+
         if not relevantes:
             return {"atributos": {}}
 
-        lista_nombres = [f"{a['id']} ({a['name']})" for a in relevantes]
-        prompt = f"""
-        Dado el siguiente título de un producto en venta:
-        "{titulo}"
+        lista_obligatorios = [f"- {a['id']} ({a['name']})" for a in relevantes if a["required"]]
+        lista_opcionales = [f"- {a['id']} ({a['name']})" for a in relevantes if not a["required"]][:12]
 
-        Extrae o deduce los valores técnicos para las siguientes características exigidas por Mercado Libre:
-        {', '.join(lista_nombres)}
+        texto_oblig = "\n".join(lista_obligatorios) if lista_obligatorios else "Ninguno estrictamente obligatorio."
+        texto_opcio = "\n".join(lista_opcionales) if lista_opcionales else "Ninguno adicional."
+
+        prompt = f"""Dado el siguiente título de un producto tecnológico/electrónico:
+"{titulo}"
+
+PRIORIDAD MÁXIMA - Extrae o deduce lógicamente los siguientes atributos OBLIGATORIOS:
+{texto_oblig}
+
+Atributos OPCIONALES (solo si son muy evidentes):
+{texto_opcio}
+
+Reglas estrictas:
+- Responde SOLO con un JSON válido. NADA de texto adicional, ni etiquetas json.
+- Claves: EXACTAMENTE el ID del atributo (ej. COLOR).
+- Para los OBLIGATORIOS, intenta deducirlos de forma lógica si no están explícitos en el título (ej. Color: "Negro" suele ser estándar, Material: "Plástico" o "Metal").
+- Si no puedes deducir uno bajo ninguna lógica, déjalo vacío "".
+"""
+
+        headers_or = {
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": "http://localhost:8080",
+            "X-Title": "MLV ERP System",
+            "Content-Type": "application/json"
+        }
         
-        Reglas:
-        - Responde ÚNICAMENTE un objeto JSON donde las CLAVES sean estrictamente el ID del atributo (ejemplo: "COLOR", "VOLTAGE", "RAM_MEMORY") y el VALOR sea el texto deducido.
-        - Si un atributo no se puede deducir con certeza del título, NO lo inventes y pon "".
-        - Ejemplo de salida: {{"COLOR": "Negro", "VOLTAGE": "110V/220V"}}
-        """
+        payload_or = {
+            "model": "deepseek/deepseek-chat",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1
+        }
 
-        respuesta = cliente_ia.models.generate_content(
-            model='gemini-2.0-flash', 
-            contents=prompt
-        )
-        txt_resp = respuesta.text.strip()
-        if txt_resp.startswith("```json"):
-            txt_resp = txt_resp.replace("```json", "").replace("```", "").strip()
-        elif txt_resp.startswith("```"):
-            txt_resp = txt_resp.replace("```", "").strip()
-
-        datos_ia = json.loads(txt_resp)
+        url_openrouter = "https://" + "openrouter.ai/api/v1/chat/completions"
+        res_or = requests.post(url_openrouter, headers=headers_or, json=payload_or, timeout=12)
         
-        ids_oficiales = {a["id"] for a in relevantes}
+        if res_or.status_code != 200:
+            return {"error": f"Error API OpenRouter ({res_or.status_code})"}
+
+        raw_text = res_or.json()["choices"][0]["message"]["content"].strip()
+        
+        if raw_text.startswith("```json"):
+            raw_text = raw_text.replace("```json", "").replace("```", "").strip()
+        elif raw_text.startswith("```"):
+            raw_text = raw_text.replace("```", "").strip()
+
+        datos_ia = json.loads(raw_text)
+
+        ids_validos = {a["id"] for a in relevantes}
         atributos_finales = {}
         for k, v in datos_ia.items():
             k_upper = str(k).strip().upper()
-            if k_upper in ids_oficiales and v and str(v).strip() != "":
+            if k_upper in ids_validos and v and str(v).strip() != "":
                 atributos_finales[k_upper] = str(v).strip()
 
         return {"atributos": atributos_finales}
+
     except Exception as e:
-        print(f"Error en autollenado IA: {e}")
-        return {"error": f"Fallo al procesar con IA: {str(e)}"}
+        return {"error": f"Fallo en IA: {str(e)}"}
 
 @app.get("/verificar-tokens")
 def verificar_tokens_endpoint():
@@ -2200,11 +2340,23 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
             actualizar_progreso(porcentaje, f"[{nombre_perfil}] Publicando ({procesados}/{total_items}): {titulo_original[:25]}...")
 
             titulo_x3 = f"{titulo_original}\n{titulo_original}\n{titulo_original}\n"
+            
+            # --- NUEVA INYECCIÓN DE FICHA TÉCNICA EN LA DESCRIPCIÓN ---
+            attr_adicionales = prod.get('AtributosDinamicos', {})
+            bloque_tecnico = "========================================\n"
+            bloque_tecnico += "ESPECIFICACIONES TÉCNICAS Y CARACTERÍSTICAS\n"
+            bloque_tecnico += "========================================\n"
+            bloque_tecnico += f"• MARCA: {prod.get('Marca', 'Genérico')}\n"
+            bloque_tecnico += f"• MODELO: {prod.get('Modelo', 'Universal')}\n"
+            for k, v in attr_adicionales.items():
+                bloque_tecnico += f"• {k.replace('_', ' ')}: {v}\n"
+            bloque_tecnico += "========================================\n\n"
+
             if prod.get('DescripcionCustom') and len(str(prod['DescripcionCustom']).strip()) > 5:
                 cuerpo_desc = f"{prod['DescripcionCustom']}\n"
-                descripcion_estructurada = f"{BLOQUE_SUPERIOR}\n\n{titulo_x3}\n{cuerpo_desc}\n{BLOQUE_INFERIOR}"
+                descripcion_estructurada = f"{BLOQUE_SUPERIOR}\n\n{titulo_x3}\n{cuerpo_desc}\n{bloque_tecnico}{BLOQUE_INFERIOR}"
             else:
-                descripcion_estructurada = f"{BLOQUE_SUPERIOR}\n\n{titulo_x3}\n{BLOQUE_INFERIOR}"
+                descripcion_estructurada = f"{BLOQUE_SUPERIOR}\n\n{titulo_x3}\n{bloque_tecnico}{BLOQUE_INFERIOR}"
 
             payload_desc = {
                 "plain_text": descripcion_estructurada,
