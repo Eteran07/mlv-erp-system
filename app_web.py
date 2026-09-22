@@ -1,4 +1,6 @@
 import os
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
+import io
 import glob
 import json
 import base64
@@ -12,6 +14,15 @@ from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, FileResponse
 from dotenv import load_dotenv
+
+ARCHIVO_MEMORIA = "memoria_erp.json"
+ULTIMO_REPORTE = [] # <-- NUEVA VARIABLE GLOBAL AÑADIDA AQUI
+
+PROGRESO_ACTUAL = {
+    "porcentaje": 0,
+    "mensaje": "Iniciando...",
+    "activo": False
+}
 
 # Importar Pillow para validar el tamaño mínimo de 500x500px exigido por ML
 try:
@@ -38,6 +49,8 @@ DOM_ML = "mercado" + "libre.com"
 API_ML = f"https://api.{DOM_ML}"
 DOM_WA = "wa" + ".me"
 API_WA = f"https://{DOM_WA}"
+
+
 
 CARPETA_LOTE_IMAGENES = "lote_imagenes"
 os.makedirs(CARPETA_LOTE_IMAGENES, exist_ok=True)
@@ -247,63 +260,80 @@ def construir_atributos_dinamicos_dict(prod, attr_adicionales, headers):
     return lista
 
 def obtener_inventario_ml(headers):
-    """Descarga de ML TODOS los títulos y los SKUs activos de la cuenta (usa paginación)."""
+    """Descarga de ML los títulos y SKUs activos asegurando el avance correcto del offset."""
     inventario = {'titulos': set(), 'skus': set()}
     try:
         url_me = f"{API_ML}/users/me"
         res_me = requests.get(url_me, headers=headers)
-        if res_me.status_code != 200: return inventario
+        if res_me.status_code != 200: 
+            print(f"❌ [DEBUG] Error /users/me: {res_me.text}")
+            return inventario
         user_id = res_me.json().get("id")
 
         item_ids = []
         offset = 0
-        limit = 50
+        limit = 50  # Lotes de 50 en 50 para total seguridad en la paginación
         
         while True:
-            url_search = f"{API_ML}/users/{user_id}/items/search?offset={offset}&limit={limit}"
+            url_search = f"{API_ML}/users/{user_id}/items/search?status=active&offset={offset}&limit={limit}"
             res_search = requests.get(url_search, headers=headers)
+            
             if res_search.status_code != 200:
+                print(f"❌ [DEBUG] Error en bloque offset {offset}: {res_search.text}")
                 break
                 
             data = res_search.json()
             results = data.get("results", [])
+            paging = data.get("paging", {})
+            total_ml = paging.get("total", 0)
+            
             if not results:
                 break
                 
             item_ids.extend(results)
-            paging = data.get("paging", {})
-            total = paging.get("total", 0)
-            offset += limit
+            offset += len(results)  # Avanzamos el offset basándonos en los resultados reales devueltos
             
-            if offset >= total:
+            if offset >= total_ml or len(results) == 0:
                 break
 
+        print(f"🔍 [DEBUG] Total de IDs activos encontrados en /search: {len(item_ids)}")
+
         if item_ids:
-            for i in range(0, len(item_ids), 50):
-                ids_str = ",".join(item_ids[i:i+50]) 
+            for i in range(0, len(item_ids), 20):  # Consultamos de 20 en 20 para evitar saturar la API de detalles
+                ids_str = ",".join(item_ids[i:i+20]) 
                 url_items = f"{API_ML}/items?ids={ids_str}"
                 res_detalles = requests.get(url_items, headers=headers)
                 
-                for item in res_detalles.json():
-                    if item.get("code") == 200:
-                        body = item.get("body", {})
-                        title = body.get("title", "").strip().lower()
-                        if title:
-                            inventario['titulos'].add(title)
-                            
-                        for attr in body.get("attributes", []):
-                            if attr.get("id") in ["SELLER_SKU", "PART_NUMBER", "ALPHANUMERIC_MODEL", "MODEL"]:
-                                val = str(attr.get("value_name", "")).strip().lower()
-                                if val and val not in ["nan", "omitir", "n/a", "null"]:
-                                    inventario['skus'].add(val)
+                if res_detalles.status_code == 200:
+                    res_json = res_detalles.json()
+                    if isinstance(res_json, list):
+                        for item in res_json:
+                            if isinstance(item, dict) and item.get("code") == 200:
+                                body = item.get("body", {})
+                                
+                                # Extraer Título
+                                title = body.get("title", "").strip().lower()
+                                if title:
+                                    inventario['titulos'].add(title)
                                     
-                        custom_field = body.get("seller_custom_field")
-                        if custom_field:
-                            c_val = str(custom_field).strip().lower()
-                            if c_val and c_val not in ["nan", "omitir", "n/a", "null"]:
-                                inventario['skus'].add(c_val)
+                                # Extraer SKUs de los atributos
+                                for attr in body.get("attributes", []):
+                                    if attr.get("id") in ["SELLER_SKU", "PART_NUMBER", "ALPHANUMERIC_MODEL", "MODEL"]:
+                                        val = str(attr.get("value_name", "")).strip().lower()
+                                        if val and val not in ["nan", "omitir", "n/a", "null"]:
+                                            inventario['skus'].add(val)
+                                            
+                                # Extraer seller_custom_field directo
+                                custom_field = body.get("seller_custom_field")
+                                if custom_field:
+                                    c_val = str(custom_field).strip().lower()
+                                    if c_val and c_val not in ["nan", "omitir", "n/a", "null"]:
+                                        inventario['skus'].add(c_val)
+                                        
+        print(f"✅ [DEBUG] Extracción exitosa. Títulos recolectados: {len(inventario['titulos'])} | SKUs recolectados: {len(inventario['skus'])}")
+
     except Exception as e:
-        print("Error obteniendo inventario completo:", e)
+        print(f"❌ [DEBUG] Excepción crítica en obtener_inventario_ml: {e}")
         
     return inventario
 
@@ -514,9 +544,12 @@ HTML_INTERFACE = """
                     </div>
                 </div>
 
-                <div style="margin-bottom: 25px;">
-                    <button onclick="abrirModalCategorias()" style="width: 100%; padding: 14px; font-size: 15px; background: #0284c7; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">
-                        🔍 Analizar Inventario y Generar Reporte
+                <div style="margin-bottom: 25px; display: flex; gap: 10px;">
+                    <button onclick="sincronizarMemoriaML()" style="width: 50%; padding: 14px; font-size: 15px; background: #8b5cf6; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">
+                        📥 1. Sincronizar Memoria con ML
+                    </button>
+                    <button onclick="abrirModalCategorias()" style="width: 50%; padding: 14px; font-size: 15px; background: #0284c7; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">
+                        🔍 2. Analizar Inventario Excel
                     </button>
                 </div>
 
@@ -1031,6 +1064,23 @@ HTML_INTERFACE = """
                 const errorMsg = "❌ Error al verificar tokens: " + e;
                 if (consolaMain) consolaMain.innerText = errorMsg;
                 if (consolaTokens) consolaTokens.innerText = errorMsg;
+            }
+        }
+        
+        async function sincronizarMemoriaML() {
+            document.getElementById('loader-zona').style.display = 'block';
+            document.getElementById('spinner-percentage').innerText = "0%";
+            document.getElementById('loader-mensaje').innerText = "Descargando inventario de Mercado Libre a memoria local... (Esto puede tomar unos minutos)";
+            
+            try {
+                const res = await fetch('/api/sincronizar-memoria-ml', { method: 'POST' });
+                const data = await res.json();
+                if (data.error) alert("Error: " + data.error);
+                else alert("✅ " + data.mensaje);
+            } catch(e) {
+                alert("❌ Error conectando con el servidor.");
+            } finally {
+                document.getElementById('loader-zona').style.display = 'none';
             }
         }
 
@@ -2203,6 +2253,46 @@ def verificar_tokens_endpoint():
             logs.append(f"❌ [{nombre}] Error leyendo token: {e}")
     return {"logs": logs}
 
+@app.post("/api/sincronizar-memoria-ml")
+def api_sincronizar_memoria():
+    archivos = listar_archivos_token()
+    memoria = cargar_memoria()
+    total_nuevos = 0
+    
+    for arch in archivos:
+        nombre_c = obtener_nombre_cuenta(arch)
+        token = obtener_token(arch)
+        if not token: 
+            print(f"[{nombre_c}] Token no válido o ausente.")
+            continue
+        
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        inv_ml = obtener_inventario_ml(headers)
+        
+        print(f"[{nombre_c}] ML devolvió -> Títulos: {len(inv_ml['titulos'])}, SKUs: {len(inv_ml['skus'])}")
+        
+        if nombre_c not in memoria:
+            memoria[nombre_c] = {'titulos': [], 'skus': []}
+            
+        titulos_existentes = set(memoria[nombre_c].get('titulos', []))
+        skus_existentes = set(memoria[nombre_c].get('skus', []))
+        
+        nuevos_titulos = list(inv_ml['titulos'] - titulos_existentes)
+        nuevos_skus = list(inv_ml['skus'] - skus_existentes)
+        
+        print(f"[{nombre_c}] Nuevos a agregar -> Títulos: {len(nuevos_titulos)}, SKUs: {len(nuevos_skus)}")
+        
+        if nuevos_titulos or nuevos_skus:
+            memoria[nombre_c]['titulos'].extend(nuevos_titulos)
+            memoria[nombre_c]['skus'].extend(nuevos_skus)
+            total_nuevos += (len(nuevos_titulos) + len(nuevos_skus))
+        
+    with open(ARCHIVO_MEMORIA, "w", encoding="utf-8") as f:
+        json.dump(memoria, f, ensure_ascii=False, indent=4)
+        
+    print(f"Guardado físico completado. Total nuevos agregados: {total_nuevos}")
+    return {"mensaje": f"Sincronización finalizada. Se guardaron {total_nuevos} datos nuevos en la memoria local."}
+
 @app.get("/", response_class=HTMLResponse)
 def home():
     return HTML_INTERFACE
@@ -2231,13 +2321,15 @@ def previsualizar_archivo(
     archivos_a_escanear = listar_archivos_token()
     inventario_por_cuenta = {}
 
-    actualizar_progreso(15, "Analizando SKUs e inventario activo en Mercado Libre...")
+    actualizar_progreso(15, "Cargando memoria local de inventario...")
+    memoria_local = cargar_memoria()
     for arch in archivos_a_escanear:
-        token = obtener_token(arch)
         nombre_c = obtener_nombre_cuenta(arch)
-        if token:
-            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-            inventario_por_cuenta[nombre_c] = obtener_inventario_ml(headers)
+        if nombre_c in memoria_local:
+            inventario_por_cuenta[nombre_c] = {
+                'titulos': set(memoria_local[nombre_c].get('titulos', [])),
+                'skus': set(memoria_local[nombre_c].get('skus', []))
+            }
         else:
             inventario_por_cuenta[nombre_c] = {'titulos': set(), 'skus': set()}
 
@@ -2279,7 +2371,10 @@ def previsualizar_archivo(
         titulo = str(item.get("Titulo", "")).strip()
         titulo_norm = titulo.lower()
         titulo_truncado = titulo[:60].strip().lower()
-        sku_norm = str(item.get("SKU", "")).strip().lower()
+        sku_raw = str(item.get("SKU", "")).strip().lower()
+        if sku_raw.endswith(".0"):
+            sku_raw = sku_raw[:-2]
+        sku_norm = sku_raw
 
         estado_cuentas = {}
         existe_en_todas = True
@@ -2347,6 +2442,8 @@ def previsualizar_archivo(
                     motivo_estado = "🚫 Omitido (Ya publicado en todas las cuentas)"
                 elif cuenta != "TODAS" and existe_en_seleccionada:
                     motivo_estado = "🚫 Omitido (Ya publicado en la cuenta destino)"
+                elif cuenta == "TODAS" and any(est == "EXISTE" for est in estado_cuentas.values()):
+                    motivo_estado = "🚫 Omitido (Ya publicado en al menos una cuenta)"
             
             if motivo_estado.startswith("✅") and not coincide_con_categoria_elegida(titulo, cat_id, categoria_filtro):
                 motivo_estado = f"🚫 Omitido (No coincide con la categoría filtro: {categoria_filtro})"
@@ -2382,10 +2479,8 @@ def previsualizar_archivo(
             "Hoja": nom_hoja, "CategoriaOrigen": cat_origen
         })
 
-    df_rep = pd.DataFrame(reporte_filas)
-    nombre_rep = f"Reporte_Sincronizacion_{int(time.time())}.xlsx"
-    ruta_rep = os.path.join(CARPETA_REPORTES, nombre_rep)
-    df_rep.to_excel(ruta_rep, index=False)
+    global ULTIMO_REPORTE
+    ULTIMO_REPORTE = reporte_filas # Se guarda solo en memoria RAM
 
     if os.path.exists(temp_filename): os.remove(temp_filename)
     actualizar_progreso(100, "¡Sincronización Finalizada!")
@@ -2396,11 +2491,27 @@ def previsualizar_archivo(
         "total_leidos": total_filas,
         "total_aprobados": aprobados_count,
         "total_omitidos": omitidos_count,
-        "archivo_reporte": nombre_rep
+        "archivo_reporte": "ultimo" # Esto avisa al backend que use el de la memoria RAM
     }
 
 @app.get("/api/descargar-reporte/{nombre_archivo}")
 def descargar_reporte(nombre_archivo: str):
+    if nombre_archivo == "ultimo":
+        global ULTIMO_REPORTE
+        if not ULTIMO_REPORTE:
+            return {"error": "No hay un reporte reciente para descargar."}
+            
+        df_rep = pd.DataFrame(ULTIMO_REPORTE)
+        stream = io.BytesIO()
+        df_rep.to_excel(stream, index=False, engine='openpyxl')
+        stream.seek(0)
+        
+        headers = {
+            'Content-Disposition': f'attachment; filename="Reporte_Inventario_{int(time.time())}.xlsx"'
+        }
+        return StreamingResponse(stream, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers)
+
+    # Por si intentas descargar un archivo viejo que sí está en el disco
     ruta = os.path.join(CARPETA_REPORTES, nombre_archivo)
     if os.path.exists(ruta):
         return FileResponse(ruta, filename=nombre_archivo)
