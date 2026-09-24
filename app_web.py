@@ -857,7 +857,7 @@ HTML_INTERFACE = """
     <div id="modal-ia-progreso" class="modal-overlay">
         <div class="modal-box" style="width: 500px; text-align: center; border-top: 6px solid #2563eb;">
             <h3 style="color: #2563eb; border-bottom: none; margin-bottom: 10px;">🤖 Cerebro IA Trabajando...</h3>
-            <p style="font-size: 14px; color: #475569; margin-bottom: 20px;">Redactando descripciones y extrayendo fichas técnicas en lotes de 5. Por favor, no cierres esta ventana.</p>
+            <p style="font-size: 14px; color: #475569; margin-bottom: 20px;">Redactando descripciones y extrayendo fichas técnicas en lotes de 10. Por favor, no cierres esta ventana.</p>
             <div style="background: #e2e8f0; border-radius: 10px; height: 20px; width: 100%; overflow: hidden; margin-bottom: 10px; border: 1px solid #cbd5e1;">
                 <div id="ia-progreso-barra" style="background: linear-gradient(90deg, #3b82f6, #2563eb); width: 0%; height: 100%; transition: width 0.4s ease;"></div>
             </div>
@@ -865,9 +865,11 @@ HTML_INTERFACE = """
                 <span id="ia-progreso-porcentaje">0</span>% Completado (<span id="ia-progreso-contador">0</span> de <span id="ia-progreso-total">0</span>)
             </div>
         </div>
-        <!-- MODAL PROGRESO PUBLICACION -->
+    </div>
+
+    <!-- MODAL PROGRESO PUBLICACION -->
     <div id="modal-pub-progreso" class="modal-overlay">
-        <div class="modal-box" style="width: 500px; text-align: center; border-top: 6px solid #16a34a;">
+        <div class="modal-box" style="width: 500px; text-align: center; border-top: 6px solid #16a34a; position: relative;">
             <h3 style="color: #16a34a; border-bottom: none; margin-bottom: 10px;">🚀 Publicando Lote en Mercado Libre...</h3>
             <p id="pub-loader-mensaje" style="font-size: 14px; color: #475569; margin-bottom: 20px;">Subiendo artículos, vinculando fotos y armando descripciones.</p>
             <div style="background: #e2e8f0; border-radius: 10px; height: 20px; width: 100%; overflow: hidden; margin-bottom: 10px; border: 1px solid #cbd5e1;">
@@ -880,8 +882,8 @@ HTML_INTERFACE = """
                 <span style="color: #16a34a;">✅ Éxitos: <span id="pub-exitos">0</span></span>
                 <span style="color: #ef4444;">❌ Errores: <span id="pub-errores">0</span></span>
             </div>
+            <button id="btn-cerrar-pub" onclick="cerrarModal('modal-pub-progreso')" style="display: none; margin-top: 20px; width: 100%; background: #475569; color: white; border: none; padding: 10px; border-radius: 8px; cursor: pointer; font-weight: bold;">Cerrar Resumen</button>
         </div>
-    </div>
     </div>
 
     <script>
@@ -1173,6 +1175,11 @@ HTML_INTERFACE = """
                         document.getElementById('pub-loader-mensaje').innerText = info.mensaje;
                         const cuentaItems = (info.exitos || 0) + (info.errores || 0);
                         document.getElementById('pub-progreso-contador').innerText = cuentaItems;
+                        
+                        // FORZAR APARICIÓN DEL BOTÓN SI YA LLEGÓ AL 100%
+                        if(info.porcentaje >= 100) {
+                            document.getElementById('btn-cerrar-pub').style.display = 'block';
+                        }
                     }
 
                     if (!info.activo && info.porcentaje >= 100) {
@@ -1802,17 +1809,15 @@ HTML_INTERFACE = """
 
             if (!confirm(`¿Confirmas publicar ${seleccionados.length} artículos en: ${nomCuenta}?`)) return;
 
-            document.getElementById('loader-zona').style.display = 'block';
-            document.getElementById('spinner-percentage').innerText = "0%";
-            document.getElementById('loader-mensaje').innerText = "Iniciando publicación en lote...";
-            iniciarMonitoreoProgreso();// ACTIVAR NUEVO MODAL DE PUBLICACIÓN EN VIVO
+            // ACTIVAR NUEVO MODAL DE PUBLICACIÓN EN VIVO
             const modalPub = document.getElementById('modal-pub-progreso');
-            document.getElementById('pub-progreso-total').innerText = total_items;
+            document.getElementById('pub-progreso-total').innerText = seleccionados.length;
             document.getElementById('pub-progreso-contador').innerText = "0";
             document.getElementById('pub-progreso-porcentaje').innerText = "0";
             document.getElementById('pub-exitos').innerText = "0";
             document.getElementById('pub-errores').innerText = "0";
             document.getElementById('pub-progreso-barra').style.width = "0%";
+            
             modalPub.style.display = 'flex';
             setTimeout(() => modalPub.classList.add('active'), 10);
             
@@ -1821,12 +1826,14 @@ HTML_INTERFACE = """
             const consola = document.getElementById('resultados');
             consola.innerText = `🚀 Publicando lote...`;
 
+            let resData = null; // <--- Declarada aquí para que el finally pueda leerla
+
             try {
                 const response = await fetch(`/publicar-lote?cuenta=${cuentaSel}`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(seleccionados)
                 });
-                const resData = await response.json();
+                resData = await response.json();
                 consola.innerText = resData.detalles.join('\\n');
 
                 if (resData.errores_idx && Object.keys(resData.errores_idx).length > 0) {
@@ -1878,7 +1885,8 @@ HTML_INTERFACE = """
             } catch(e) {
                 consola.innerText = "❌ Error subiendo lote: " + e;
             } finally {
-                window.erroresInteractiviosActuales = resData ? resData.errores_idx : {}; // Guardamos los errores para la IA
+                // Ahora sí lee correctamente los errores de resData y los guarda para la IA
+                window.erroresInteractiviosActuales = (resData && resData.errores_idx) ? resData.errores_idx : {}; 
                 if (intervaloProgreso) clearInterval(intervaloProgreso);
                 cerrarModal('modal-pub-progreso');
             }
@@ -2659,11 +2667,45 @@ def previsualizar_archivo(
     productos_activos = []
     cache_categorias_adivinadas = {}
     
-    reporte_filas = []
+    reporte_filas_todas = []
+    reporte_procesados = []
     aprobados_count = 0
     omitidos_count = 0
     
     memoria_local = cargar_memoria()
+
+    # --- NUEVO: PRE-PROCESAR TODO EL EXCEL PARA LA HOJA 1 (Sin importar el rango elegido) ---
+    skus_activos_globales = set()
+    titulos_activos_globales = set()
+    for nom_c, inv in inventario_por_cuenta.items():
+        titulos_activos_globales.update(inv['titulos'])
+        skus_activos_globales.update(inv['skus'])
+        if nom_c in memoria_local:
+            titulos_activos_globales.update(memoria_local[nom_c].get('titulos', []))
+            skus_activos_globales.update(memoria_local[nom_c].get('skus', []))
+
+    for idx_g, item_g in enumerate(filas_procesadas):
+        titulo_g = str(item_g.get("Titulo", "")).strip()
+        titulo_norm_g = titulo_g.lower()
+        titulo_trunc_g = titulo_g[:60].strip().lower()
+        sku_raw_g = str(item_g.get("SKU", "")).strip().lower()
+        if sku_raw_g.endswith(".0"):
+            sku_raw_g = sku_raw_g[:-2]
+            
+        ya_existe_g = False
+        if sku_raw_g and sku_raw_g not in ["nan", "omitir", "n/a", "null"] and sku_raw_g in skus_activos_globales:
+            ya_existe_g = True
+        else:
+            for t_ml in titulos_activos_globales:
+                if titulo_norm_g == t_ml or titulo_norm_g.startswith(t_ml) or t_ml.startswith(titulo_norm_g) or titulo_trunc_g == t_ml:
+                    ya_existe_g = True
+                    break
+        
+        fila_completa_g = item_g.copy()
+        fila_completa_g["Fila Original Excel"] = idx_g + 2
+        fila_completa_g["Estado Publicación"] = "Ya publicado" if ya_existe_g else "Libre"
+        reporte_filas_todas.append(fila_completa_g)
+    # ----------------------------------------------------------------------------------------
 
     for indice, item in enumerate(filas_rango):
         time.sleep(0.01)
@@ -2749,18 +2791,18 @@ def previsualizar_archivo(
             if motivo_estado.startswith("✅") and not coincide_con_categoria_elegida(titulo, cat_id, categoria_filtro):
                 motivo_estado = f"🚫 Omitido (No coincide con la categoría filtro: {categoria_filtro})"
 
-        # Copiamos la fila original entera y le añadimos nuestras columnas de auditoría al final
-        fila_completa = item.copy()
-        fila_completa["Fila Original Excel"] = idx_inicio + indice + 2
-        fila_completa["Categoría Detectada ML"] = cat_nombre
-        fila_completa["Estado Publicación"] = motivo_estado
-        reporte_filas.append(fila_completa)
-
         if "🚫" in motivo_estado:
             omitidos_count += 1
             continue
 
         aprobados_count += 1
+        
+        # Copiamos la fila SOLO de los aprobados para la segunda hoja del Excel
+        fila_completa = item.copy()
+        fila_completa["Fila Original Excel"] = idx_inicio + indice + 2
+        fila_completa["Categoría Detectada ML"] = cat_nombre
+        fila_completa["Estado Publicación"] = motivo_estado
+        reporte_procesados.append(fila_completa)
         actualizar_progreso(porcentaje_actual, f"[{indice+1}/{total_filas}] Sincronizando: {titulo[:25]}...")
             
         imagen_emparejada, alerta_imagen = emparejar_imagen_local(modelo, sku, titulo)
@@ -2779,10 +2821,10 @@ def previsualizar_archivo(
         })
 
     global ULTIMO_REPORTE
-    # Guardamos ambos grupos para el Excel: El original completo y los que pasaron el filtro
+    # Guardamos ambas listas en la memoria global
     ULTIMO_REPORTE = {
-        "todos": reporte_filas,
-        "procesados": [f for f in reporte_filas if "✅" in f.get("Estado Publicación", "")]
+        "todos": reporte_filas_todas,
+        "procesados": reporte_procesados
     }
 
     PROGRESO_ACTUAL["activo"] = False
@@ -2803,19 +2845,32 @@ def descargar_reporte(nombre_archivo: str):
             return {"error": "No hay un reporte reciente para descargar."}
             
         stream = io.BytesIO()
-        # Usamos ExcelWriter para crear múltiples hojas en el mismo archivo
+        # Usamos ExcelWriter para crear múltiples hojas y aplicar estilos
         with pd.ExcelWriter(stream, engine='openpyxl') as writer:
             # Hoja 1: Todo el rango original escaneado con sus estados
             df_todos = pd.DataFrame(ULTIMO_REPORTE["todos"])
             df_todos.to_excel(writer, sheet_name="Inventario Original", index=False)
+            
+            # --- PINTAR DE AMARILLO LAS FILAS YA PUBLICADAS ---
+            try:
+                from openpyxl.styles import PatternFill
+                worksheet = writer.sheets["Inventario Original"]
+                yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+                
+                for row_idx, row_data in enumerate(ULTIMO_REPORTE["todos"], start=2):
+                    estado = str(row_data.get("Estado Publicación", ""))
+                    if "Ya publicado" in estado:
+                        for col_idx in range(1, len(df_todos.columns) + 1):
+                            worksheet.cell(row=row_idx, column=col_idx).fill = yellow_fill
+            except Exception as e:
+                print(f"Aviso: No se pudo aplicar el color amarillo: {e}")
             
             # Hoja 2: Únicamente los artículos que pasaron el filtro y están en pantalla
             df_procesados = pd.DataFrame(ULTIMO_REPORTE["procesados"])
             if not df_procesados.empty:
                 df_procesados.to_excel(writer, sheet_name="Aprobados - Listos", index=False)
             else:
-                # Si no hubo aprobados, creamos una hoja vacía con un mensaje
-                pd.DataFrame([{"Mensaje": "No hubo artículos aprobados"}]).to_excel(writer, sheet_name="Aprobados - Listos", index=False)
+                pd.DataFrame([{"Mensaje": "No hubo artículos aprobados en este rango"}]).to_excel(writer, sheet_name="Aprobados - Listos", index=False)
                 
         stream.seek(0)
         
@@ -2824,7 +2879,6 @@ def descargar_reporte(nombre_archivo: str):
         }
         return StreamingResponse(stream, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers)
 
-    # Por si intentas descargar un archivo viejo que sí está físicamente en el disco
     ruta = os.path.join(CARPETA_REPORTES, nombre_archivo)
     if os.path.exists(ruta):
         return FileResponse(ruta, filename=nombre_archivo)
@@ -2832,9 +2886,14 @@ def descargar_reporte(nombre_archivo: str):
 
 @app.post("/publicar-lote")
 def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
-    PROGRESO_ACTUAL["activo"] = True
-    PROGRESO_ACTUAL["exitos"] = 0
-    PROGRESO_ACTUAL["errores"] = 0
+    global PROGRESO_ACTUAL
+    PROGRESO_ACTUAL = {
+        "porcentaje": 0,
+        "mensaje": "Iniciando conexión con Mercado Libre...",
+        "activo": True,
+        "exitos": 0,
+        "errores": 0
+    }
     archivos_destino = listar_archivos_token() if cuenta == "TODAS" else [cuenta]
     logs_totales = []
     errores_interactivos = {}
