@@ -269,47 +269,52 @@ def construir_atributos_dinamicos_dict(prod, attr_adicionales, headers):
                 lista.append({"id": k_id_upper, "value_name": str(v_val).strip()})
     return lista
 
-def obtener_inventario_ml(headers):
-    """Descarga de ML los títulos y SKUs activos asegurando el avance correcto del offset."""
+def obtener_inventario_ml(headers, nombre_perfil="Cuenta"):
+    """Descarga de ML TODO el inventario con progreso dinámico."""
     inventario = {'titulos': set(), 'skus': set()}
     try:
         url_me = f"{API_ML}/users/me"
         res_me = requests.get(url_me, headers=headers)
         if res_me.status_code != 200: 
-            print(f"❌ [DEBUG] Error /users/me: {res_me.text}")
             return inventario
         user_id = res_me.json().get("id")
 
         item_ids = []
-        offset = 0
-        limit = 50  # Lotes de 50 en 50 para total seguridad en la paginación
+        scroll_id = None
+        pagina = 1
         
         while True:
-            url_search = f"{API_ML}/users/{user_id}/items/search?status=active&offset={offset}&limit={limit}"
-            res_search = requests.get(url_search, headers=headers)
+            # 🟢 Aviso a la interfaz de que estamos paginando
+            PROGRESO_ACTUAL["mensaje"] = f"[{nombre_perfil}] Escaneando inventario profundo... (Página {pagina})"
             
+            url_search = f"{API_ML}/users/{user_id}/items/search?search_type=scan&limit=100"
+            if scroll_id:
+                url_search += f"&scroll_id={scroll_id}"
+            
+            res_search = requests.get(url_search, headers=headers)
             if res_search.status_code != 200:
-                print(f"❌ [DEBUG] Error en bloque offset {offset}: {res_search.text}")
                 break
                 
             data = res_search.json()
             results = data.get("results", [])
-            paging = data.get("paging", {})
-            total_ml = paging.get("total", 0)
             
             if not results:
                 break
                 
             item_ids.extend(results)
-            offset += len(results)  # Avanzamos el offset basándonos en los resultados reales devueltos
-            
-            if offset >= total_ml or len(results) == 0:
+            scroll_id = data.get("scroll_id")
+            pagina += 1
+            if not scroll_id:
                 break
 
-        print(f"🔍 [DEBUG] Total de IDs activos encontrados en /search: {len(item_ids)}")
+        total_items = len(item_ids)
 
         if item_ids:
-            for i in range(0, len(item_ids), 20):  # Consultamos de 20 en 20 para evitar saturar la API de detalles
+            for i in range(0, total_items, 20):
+                # 🟢 Calculamos y enviamos el porcentaje de extracción de SKUs
+                pct = int((i / total_items) * 100)
+                actualizar_progreso(pct, f"[{nombre_perfil}] Extrayendo SKUs y Variaciones: {i} de {total_items}...")
+                
                 ids_str = ",".join(item_ids[i:i+20]) 
                 url_items = f"{API_ML}/items?ids={ids_str}"
                 res_detalles = requests.get(url_items, headers=headers)
@@ -321,29 +326,31 @@ def obtener_inventario_ml(headers):
                             if isinstance(item, dict) and item.get("code") == 200:
                                 body = item.get("body", {})
                                 
-                                # Extraer Título
                                 title = body.get("title", "").strip().lower()
                                 if title:
                                     inventario['titulos'].add(title)
                                     
-                                # Extraer SKUs de los atributos
                                 for attr in body.get("attributes", []):
                                     if attr.get("id") in ["SELLER_SKU", "PART_NUMBER", "ALPHANUMERIC_MODEL", "MODEL"]:
                                         val = str(attr.get("value_name", "")).strip().lower()
                                         if val and val not in ["nan", "omitir", "n/a", "null"]:
                                             inventario['skus'].add(val)
                                             
-                                # Extraer seller_custom_field directo
+                                for var in body.get("variations", []):
+                                    for attr in var.get("attributes", []):
+                                        if attr.get("id") in ["SELLER_SKU", "PART_NUMBER", "ALPHANUMERIC_MODEL", "MODEL"]:
+                                            val = str(attr.get("value_name", "")).strip().lower()
+                                            if val and val not in ["nan", "omitir", "n/a", "null"]:
+                                                inventario['skus'].add(val)
+                                                
                                 custom_field = body.get("seller_custom_field")
                                 if custom_field:
                                     c_val = str(custom_field).strip().lower()
                                     if c_val and c_val not in ["nan", "omitir", "n/a", "null"]:
                                         inventario['skus'].add(c_val)
-                                        
-        print(f"✅ [DEBUG] Extracción exitosa. Títulos recolectados: {len(inventario['titulos'])} | SKUs recolectados: {len(inventario['skus'])}")
 
     except Exception as e:
-        print(f"❌ [DEBUG] Excepción crítica en obtener_inventario_ml: {e}")
+        print(f"❌ [DEBUG] Excepción crítica: {e}")
         
     return inventario
 
@@ -536,12 +543,21 @@ HTML_INTERFACE = """
                             <option value="TODAS">📚 Todo el Libro (Todas las Hojas)</option>
                         </select>
                     </div>
-                    <div class="step-card">
+                    <div class="step-card" style="grid-column: span 2;">
                         <span class="step-num">Paso 4</span>
-                        <label>Rango de filas:</label>
-                        <div style="display: flex; gap: 8px;">
-                            <input type="number" id="rango-inicio" value="1" placeholder="Desde" style="width: 50%;">
-                            <input type="number" id="rango-fin" value="100" placeholder="Hasta" style="width: 50%;">
+                        <label>Modo de Escaneo del Inventario:</label>
+                        <select id="modo-escaneo" onchange="toggleModoEscaneo()" style="margin-bottom: 10px; font-weight: bold; color: #0284c7;">
+                            <option value="rango">📊 Por Rango de Filas (Ej: Fila 1 a 100)</option>
+                            <option value="cantidad">📦 Por Cantidad Exacta de Artículos Libres</option>
+                        </select>
+                        
+                        <div id="contenedor-rango" style="display: flex; gap: 8px;">
+                            <input type="number" id="rango-inicio" value="1" placeholder="Desde fila" style="width: 50%;">
+                            <input type="number" id="rango-fin" value="100" placeholder="Hasta fila" style="width: 50%;">
+                        </div>
+                        
+                        <div id="contenedor-cantidad" style="display: none;">
+                            <input type="number" id="cantidad-limite" value="50" placeholder="Ej: 30 artículos libres..." style="width: 100%;">
                         </div>
                     </div>
                     <div class="step-card">
@@ -721,18 +737,6 @@ HTML_INTERFACE = """
                             <input type="number" id="cat-rango-fin" value="100" placeholder="Hasta" style="width: 50%;">
                         </div>
                     </div>
-                    <div class="step-card" style="grid-column: span 2;">
-                        <span class="step-num">Datos de Empresa</span>
-                        <div style="display: flex; gap: 8px;">
-                            <div style="width: 50%;">
-                                <label>Nombre de Empresa:</label>
-                                <input type="text" id="cat-empresa" placeholder="Ej: Mi Tienda C.A.">
-                            </div>
-                            <div style="width: 50%;">
-                                <label>WhatsApp de Ventas:</label>
-                                <input type="text" id="cat-ws" placeholder="Ej: 04141234567">
-                            </div>
-                        </div>
                     </div>
                 </div>
 
@@ -900,6 +904,12 @@ HTML_INTERFACE = """
 
         function toggleSidebar() {
             document.getElementById('sidebar').classList.toggle('collapsed');
+        }
+        
+        function toggleModoEscaneo() {
+            const modo = document.getElementById('modo-escaneo').value;
+            document.getElementById('contenedor-rango').style.display = (modo === 'rango') ? 'flex' : 'none';
+            document.getElementById('contenedor-cantidad').style.display = (modo === 'cantidad') ? 'block' : 'none';
         }
 
         function mostrarSeccion(idSeccion, el) {
@@ -1128,7 +1138,10 @@ HTML_INTERFACE = """
         async function sincronizarMemoriaML() {
             document.getElementById('loader-zona').style.display = 'block';
             document.getElementById('spinner-percentage').innerText = "0%";
-            document.getElementById('loader-mensaje').innerText = "Descargando inventario de Mercado Libre a memoria local... (Esto puede tomar unos minutos)";
+            document.getElementById('loader-mensaje').innerText = "Conectando con Mercado Libre...";
+            
+            // 🟢 ESTO ENCIENDE LA BARRA DE PROGRESO ANIMADA
+            iniciarMonitoreoProgreso(); 
             
             try {
                 const res = await fetch('/api/sincronizar-memoria-ml', { method: 'POST' });
@@ -1137,8 +1150,6 @@ HTML_INTERFACE = """
                 else alert("✅ " + data.mensaje);
             } catch(e) {
                 alert("❌ Error conectando con el servidor.");
-            } finally {
-                document.getElementById('loader-zona').style.display = 'none';
             }
         }
 
@@ -1558,18 +1569,78 @@ HTML_INTERFACE = """
             elemento.classList.add('selected');
             document.getElementById('cat-seleccionada-id').value = idCat;
         }
+        
+        
+        function abrirSelectorCategoriaManual(idx) {
+            document.getElementById('manual-cat-idx').value = idx;
+            document.getElementById('input-busqueda-cat').value = "";
+            document.getElementById('resultados-busqueda-cat').innerHTML = '<div style="text-align: center; color: #94a3b8; padding: 20px; font-size: 13px;">Usa el buscador superior para ver opciones.</div>';
+            
+            const overlay = document.getElementById('modal-categoria-manual');
+            overlay.style.display = 'flex';
+            setTimeout(() => overlay.classList.add('active'), 10);
+        }
+
+        async function buscarCategoriasManual() {
+            const query = document.getElementById('input-busqueda-cat').value.trim();
+            const contenedor = document.getElementById('resultados-busqueda-cat');
+            if (!query) return alert("Escribe un término de búsqueda.");
+
+            contenedor.innerHTML = '<div style="text-align: center; color: #0284c7; padding: 15px; font-weight: bold;">⏳ Buscando en Mercado Libre...</div>';
+
+            try {
+                const res = await fetch(`/api/buscar-categorias-mlv?q=${encodeURIComponent(query)}`);
+                const lista = await res.json();
+
+                if (!lista.length) {
+                    contenedor.innerHTML = '<div style="text-align: center; color: #ef4444; padding: 15px;">No se encontraron categorías. Intenta con otra palabra.</div>';
+                    return;
+                }
+
+                contenedor.innerHTML = "";
+                lista.forEach(c => {
+                    contenedor.innerHTML += `
+                        <div onclick="seleccionarCategoriaManual('${c.id}', '${c.name.replace(/'/g, "\\'")}')" style="padding: 10px; border-bottom: 1px solid #e2e8f0; cursor: pointer; transition: 0.2s; border-radius: 6px;" onmouseover="this.style.background='#e0f2fe'" onmouseout="this.style.background='transparent'">
+                            <div style="font-weight: 700; color: #0f172a; font-size: 13px;">📌 ${c.name}</div>
+                            <div style="font-size: 11px; color: #64748b;">ID Oficial: <b>${c.id}</b></div>
+                        </div>
+                    `;
+                });
+            } catch(e) {
+                contenedor.innerHTML = '<div style="color: red; padding: 15px; text-align: center;">Error al conectar con la API de categorías.</div>';
+            }
+        }
+
+        function seleccionarCategoriaManual(idCat, nombreCat) {
+            const idx = document.getElementById('manual-cat-idx').value;
+            
+            document.getElementById('cat-' + idx).value = idCat;
+            
+            const labelEl = document.getElementById('cat-tag-label-' + idx);
+            if (labelEl) {
+                labelEl.innerText = `📌 ML: ${nombreCat}`;
+                labelEl.title = `ID: ${idCat}`;
+            }
+
+            cerrarModal('modal-categoria-manual');
+        }
 
         async function confirmarYCargarInventario() {
             cerrarModal('modal-categoria-mlv');
             const idCatDefecto = document.getElementById('cat-seleccionada-id').value;
             const fileInput = document.getElementById('file-db');
+            const modo = document.getElementById('modo-escaneo').value;
 
             const formData = new FormData();
             formData.append('file', fileInput.files[0]);
             formData.append('cuenta', document.getElementById('cuenta-select').value);
             formData.append('hoja', document.getElementById('hoja-select').value);
-            formData.append('inicio', document.getElementById('rango-inicio').value);
-            formData.append('fin', document.getElementById('rango-fin').value);
+            
+            // Si eligió cantidad exacta, mandamos el límite y un inicio base
+            formData.append('inicio', document.getElementById('rango-inicio').value || 1);
+            formData.append('fin', (modo === 'rango') ? (document.getElementById('rango-fin').value || 100) : 999999);
+            formData.append('cantidad_limite', (modo === 'cantidad') ? (document.getElementById('cantidad-limite').value || 0) : 0);
+            
             formData.append('categoria_filtro', idCatDefecto);
             formData.append('filtrar_duplicados', document.getElementById('filtar-duplicados').checked);
 
@@ -1578,6 +1649,9 @@ HTML_INTERFACE = """
             formData.append('col_mod', document.getElementById('map-mod').value);
             formData.append('col_pre', document.getElementById('map-pre').value);
             formData.append('col_stk', document.getElementById('map-stk').value);
+            
+            
+            
 
             document.getElementById('tabla-container').style.display = 'none';
             document.getElementById('resumen-reporte-box').style.display = 'none';
@@ -1666,11 +1740,14 @@ HTML_INTERFACE = """
                                 <td><input type="checkbox" class="prod-check" data-idx="${idx}" checked></td>
                                 <td>
                                     <input type="text" id="tit-${idx}" value="${prod.Titulo}" maxlength="60" style="margin-bottom:4px; font-weight:bold;">
-                                    <div class="cat-tag" title="ID: ${prod.Categoria_ID}">📌 ML: ${prod.CategoriaNombre}</div>
+                                    <div style="display: flex; gap: 4px; align-items: center; margin-bottom: 4px;">
+                                        <div id="cat-tag-label-${idx}" class="cat-tag" style="flex-grow: 1; overflow: hidden; text-overflow: ellipsis;" title="ID: ${prod.Categoria_ID}">📌 ML: ${prod.CategoriaNombre}</div>
+                                        <button type="button" onclick="abrirSelectorCategoriaManual(${idx})" style="padding: 2px 6px; font-size: 10px; background: #0284c7; border-radius: 4px; cursor: pointer; color: white;" title="Cambiar categoría manualmente">✏️ Cambiar</button>
+                                    </div>
+                                    <input type="hidden" id="cat-${idx}" value="${prod.Categoria_ID}">
                                     <div id="desc-tag-${idx}" class="desc-tag">📋 Plantilla Oficial (Título x3)</div>
                                     <div style="font-size:11px; color:#64748b; margin-top:2px;">📁 Hoja: <b>${prod.Hoja}</b></div>
                                     <div style="margin-top:6px;">${badgesHTML}</div>
-                                    <input type="hidden" id="cat-${idx}" value="${prod.Categoria_ID}">
                                     <input type="hidden" id="desc-init-${idx}" value="${prod.DescripcionCustom || ''}">
                                 </td>
                                 <td><input type="number" id="pre-${idx}" value="${precioFormateado}" step="0.01"></td>
@@ -2258,6 +2335,29 @@ HTML_INTERFACE = """
             alert("✅ Corrección y Aprendizaje finalizado. La IA ha memorizado estos errores para no repetirlos. Ya puedes intentar 'Publicar Lote' nuevamente.");
         }
     </script>
+    
+    <!-- MODAL SELECTOR MANUAL DE CATEGORÍA -->
+    <div id="modal-categoria-manual" class="modal-overlay">
+        <div class="modal-box" style="width: 500px;">
+            <h3 style="color: #0284c7; border-bottom: none; margin-bottom: 5px;">🔍 Buscar Categoría Manualmente</h3>
+            <p style="font-size: 12px; color: #475569; margin-top: 0;">Escribe una palabra clave (ej. "laptop", "mouse", "memoria") para encontrar el ID oficial en Mercado Libre.</p>
+            <input type="hidden" id="manual-cat-idx">
+            
+            <div style="display: flex; gap: 8px; margin-bottom: 15px;">
+                <input type="text" id="input-busqueda-cat" placeholder="Escribe el producto o categoría..." onkeydown="if(event.key==='Enter') buscarCategoriasManual()">
+                <button type="button" onclick="buscarCategoriasManual()" style="background: #0284c7; padding: 0 15px;">Buscar</button>
+            </div>
+
+            <div id="resultados-busqueda-cat" style="max-height: 250px; overflow-y: auto; border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc; padding: 5px;">
+                <div style="text-align: center; color: #94a3b8; padding: 20px; font-size: 13px;">Usa el buscador superior para ver opciones.</div>
+            </div>
+
+            <div style="display: flex; justify-content: flex-end; margin-top: 20px;">
+                <button type="button" onclick="cerrarModal('modal-categoria-manual')" style="background: #64748b; padding: 8px 16px;">Cerrar</button>
+            </div>
+        </div>
+    </div>
+    
 </body>
 </html>
 """
@@ -2274,6 +2374,25 @@ def obtener_cuentas():
 @app.get("/api/categorias-mlv")
 def endpoint_categorias_mlv():
     return obtener_categorias_raices_mlv()
+
+@app.get("/api/buscar-categorias-mlv")
+def buscar_categorias_mlv(q: str):
+    """Busca categorías oficiales de Mercado Libre que coincidan con un texto de búsqueda."""
+    try:
+        url = f"{API_ML}/sites/MLV/domain_discovery/search?q={urllib.parse.quote(q)}"
+        res = requests.get(url, timeout=6)
+        if res.status_code == 200:
+            data = res.json()
+            resultados = []
+            for item in data[:10]:
+                resultados.append({
+                    "id": item.get("category_id"),
+                    "name": item.get("category_name")
+                })
+            return resultados
+    except Exception:
+        pass
+    return []
 
 @app.post("/api/hojas-excel")
 def obtener_hojas_excel(file: UploadFile = File(...)):
@@ -2540,6 +2659,11 @@ def verificar_tokens_endpoint():
 
 @app.post("/api/sincronizar-memoria-ml")
 def api_sincronizar_memoria():
+    global PROGRESO_ACTUAL
+    PROGRESO_ACTUAL["activo"] = True
+    PROGRESO_ACTUAL["porcentaje"] = 0
+    PROGRESO_ACTUAL["mensaje"] = "Iniciando sincronización..."
+    
     archivos = listar_archivos_token()
     memoria = cargar_memoria()
     total_nuevos = 0
@@ -2548,13 +2672,11 @@ def api_sincronizar_memoria():
         nombre_c = obtener_nombre_cuenta(arch)
         token = obtener_token(arch)
         if not token: 
-            print(f"[{nombre_c}] Token no válido o ausente.")
             continue
         
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        inv_ml = obtener_inventario_ml(headers)
-        
-        print(f"[{nombre_c}] ML devolvió -> Títulos: {len(inv_ml['titulos'])}, SKUs: {len(inv_ml['skus'])}")
+        # Le enviamos el nombre para que lo muestre en pantalla
+        inv_ml = obtener_inventario_ml(headers, nombre_c)
         
         if nombre_c not in memoria:
             memoria[nombre_c] = {'titulos': [], 'skus': []}
@@ -2565,16 +2687,15 @@ def api_sincronizar_memoria():
         nuevos_titulos = list(inv_ml['titulos'] - titulos_existentes)
         nuevos_skus = list(inv_ml['skus'] - skus_existentes)
         
-        print(f"[{nombre_c}] Nuevos a agregar -> Títulos: {len(nuevos_titulos)}, SKUs: {len(nuevos_skus)}")
-        
         if nuevos_titulos or nuevos_skus:
             memoria[nombre_c]['titulos'].extend(nuevos_titulos)
             memoria[nombre_c]['skus'].extend(nuevos_skus)
             total_nuevos += (len(nuevos_titulos) + len(nuevos_skus))
-        
+    
     with open(ARCHIVO_MEMORIA, "w", encoding="utf-8") as f:
         json.dump(memoria, f, ensure_ascii=False, indent=4)
         
+    PROGRESO_ACTUAL["activo"] = False
     return {"mensaje": f"Sincronización finalizada. Se guardaron {total_nuevos} datos nuevos en la memoria local."}
 
 
@@ -2613,6 +2734,7 @@ def previsualizar_archivo(
     hoja: str = Form("TODAS"),
     inicio: int = Form(1),
     fin: int = Form(100),
+    cantidad_limite: int = Form(0), 
     categoria_filtro: str = Form("TODAS"),
     filtrar_duplicados: str = Form("true"),
     col_tit: str = Form(""),
@@ -2661,7 +2783,12 @@ def previsualizar_archivo(
         return {"error": f"Error heurístico leyendo el archivo: {str(e)}"}
 
     idx_inicio = max(0, inicio - 1)
-    filas_rango = filas_procesadas[idx_inicio:fin]
+    
+    if cantidad_limite > 0:
+        filas_rango = filas_procesadas[idx_inicio:]
+    else:
+        filas_rango = filas_procesadas[idx_inicio:fin]
+        
     total_filas = len(filas_rango)
 
     productos_activos = []
@@ -2674,7 +2801,6 @@ def previsualizar_archivo(
     
     memoria_local = cargar_memoria()
 
-    # --- NUEVO: PRE-PROCESAR TODO EL EXCEL PARA LA HOJA 1 (Sin importar el rango elegido) ---
     skus_activos_globales = set()
     titulos_activos_globales = set()
     for nom_c, inv in inventario_por_cuenta.items():
@@ -2705,11 +2831,13 @@ def previsualizar_archivo(
         fila_completa_g["Fila Original Excel"] = idx_g + 2
         fila_completa_g["Estado Publicación"] = "Ya publicado" if ya_existe_g else "Libre"
         reporte_filas_todas.append(fila_completa_g)
-    # ----------------------------------------------------------------------------------------
 
     for indice, item in enumerate(filas_rango):
+        # Detener la búsqueda si alcanzamos la meta de artículos libres deseados
+        if cantidad_limite > 0 and aprobados_count >= cantidad_limite:
+            break
+
         time.sleep(0.01)
-        porcentaje_actual = int(20 + ((indice + 1) / max(1, total_filas)) * 75)
         
         titulo = str(item.get("Titulo", "")).strip()
         titulo_norm = titulo.lower()
@@ -2724,9 +2852,7 @@ def previsualizar_archivo(
         existe_en_seleccionada = False
         nombre_seleccionada = obtener_nombre_cuenta(cuenta) if cuenta != "TODAS" else "TODAS"
 
-        # Validación cruzada (ML Real + Memoria de la App)
         for nom_c, inv in inventario_por_cuenta.items():
-            
             titulos_activos = set(inv['titulos'])
             skus_activos = set(inv['skus'])
             
@@ -2738,7 +2864,6 @@ def previsualizar_archivo(
             
             existe_por_titulo = False
             for t_ml in titulos_activos:
-                # Coincidencia exacta o detecta si ML truncó el título
                 if titulo_norm == t_ml or titulo_norm.startswith(t_ml) or t_ml.startswith(titulo_norm) or titulo_truncado == t_ml:
                     existe_por_titulo = True
                     break
@@ -2793,22 +2918,38 @@ def previsualizar_archivo(
 
         if "🚫" in motivo_estado:
             omitidos_count += 1
-            continue
+            if filtrar_duplicados == "true":
+                # LÓGICA DE PROGRESO CORREGIDA PARA LAS OMITIDAS
+                if cantidad_limite > 0:
+                    pct = int(20 + (aprobados_count / max(1, cantidad_limite)) * 75)
+                    actualizar_progreso(pct, f"[{aprobados_count}/{cantidad_limite}] Buscando libres... (Omitiendo fila {idx_inicio + indice + 2})")
+                else:
+                    pct = int(20 + ((indice + 1) / max(1, total_filas)) * 75)
+                    actualizar_progreso(pct, f"[{indice+1}/{total_filas}] Omitiendo artículo ya publicado...")
+                continue
 
         aprobados_count += 1
         
-        # Copiamos la fila SOLO de los aprobados para la segunda hoja del Excel
+        # LÓGICA DE PROGRESO CORREGIDA PARA LAS APROBADAS
+        if cantidad_limite > 0:
+            porcentaje_actual = int(20 + (aprobados_count / max(1, cantidad_limite)) * 75)
+            mensaje_progreso = f"[{aprobados_count}/{cantidad_limite}] Sincronizando: {titulo[:30]}..."
+        else:
+            porcentaje_actual = int(20 + ((indice + 1) / max(1, total_filas)) * 75)
+            mensaje_progreso = f"[{indice+1}/{total_filas}] Sincronizando: {titulo[:30]}..."
+
+        actualizar_progreso(porcentaje_actual, mensaje_progreso)
+        
         fila_completa = item.copy()
         fila_completa["Fila Original Excel"] = idx_inicio + indice + 2
         fila_completa["Categoría Detectada ML"] = cat_nombre
         fila_completa["Estado Publicación"] = motivo_estado
         reporte_procesados.append(fila_completa)
-        actualizar_progreso(porcentaje_actual, f"[{indice+1}/{total_filas}] Sincronizando: {titulo[:25]}...")
             
         imagen_emparejada, alerta_imagen = emparejar_imagen_local(modelo, sku, titulo)
         
         productos_activos.append({
-            "FilaExcel": idx_inicio + indice + 2, # <-- NUEVO: Guarda la posición original
+            "FilaExcel": idx_inicio + indice + 2,
             "Titulo": titulo, "Precio": precio, "Stock": stock,
             "Marca": marca, "Modelo": modelo, "SKU": sku, 
             "Color": "", "Compatibilidad": "", "Material": "",
@@ -2821,7 +2962,6 @@ def previsualizar_archivo(
         })
 
     global ULTIMO_REPORTE
-    # Guardamos ambas listas en la memoria global
     ULTIMO_REPORTE = {
         "todos": reporte_filas_todas,
         "procesados": reporte_procesados

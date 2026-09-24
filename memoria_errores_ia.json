@@ -2,5 +2,9 @@
     "⚠️ Atributo [UNITS_PER_PACK] to be added with values [(null,1)] | ⚠️ \"Unidades por pack\": Completa este campo porque completaste \"Unidad\" en el campo \"Formato de venta\".",
     "⚠️ Atributo [UNITS_PER_PACK] to be added with values [(null,1)] | ⚠️ El valor que ingresaste en \"Volumen de la unidad\" es incorrecto. | 📏 Falta unidad de medida (GB, pulgadas, Hz, etc) en: UNIT_VOLUME. | ⚠️ \"Unidades por pack\": Completa este campo porque completaste \"Unidad\" en el campo \"Formato de ",
     "⚠️ Atributo [UNITS_PER_PACK] to be added with values [(null,1)] | 📏 Falta unidad de medida (GB, pulgadas, Hz, etc) en: UNIT_VOLUME. | ⚠️ \"Unidades por pack\": Completa este campo porque completaste \"Unidad\" en el campo \"Formato de venta\".",
-    "⚠️ Atributo [UNITS_PER_PACK] to be modified - values [(null,1 unidad)] should be [(null,1)] | ⚠️ \"Unidades por pack\": Ingresa 1 en este campo porque completaste \"Unidad\" en el campo \"Formato de venta\". | ⚠️ El valor que ingresaste en \"Unidades por pack\" es incorrecto."
+    "⚠️ Atributo [UNITS_PER_PACK] to be modified - values [(null,1 unidad)] should be [(null,1)] | ⚠️ \"Unidades por pack\": Ingresa 1 en este campo porque completaste \"Unidad\" en el campo \"Formato de venta\". | ⚠️ El valor que ingresaste en \"Unidades por pack\" es incorrecto.",
+    "⚠️ User has not mode me1 | ⚠️ Catalog has not mode me1 | ⚠️ Atributo PAGE_YIELD is not a valid number.",
+    "📏 Falta unidad de medida (GB, pulgadas, Hz, etc) en: HARD_DRIVE_DATA_STORAGE_CAPACITY. | ⚠️ El valor que ingresaste en \"Capacidad total del módulo de memoria RAM\" es incorrecto. | 📏 Falta unidad de medida (GB, pulgadas, Hz, etc) en: SSD_DATA_STORAGE_CAPACITY. | ⚠️ El valor que ingresaste en \"Capacid",
+    "📸 Las exposiciones Clásica/Premium exigen al menos 1 foto obligatoria. | ⚠️ Catalog has not mode me1 | ⚠️ User has not mode me1",
+    "⚠️ El valor que ingresaste en \"Rendimiento en páginas\" es incorrecto."
 ]
