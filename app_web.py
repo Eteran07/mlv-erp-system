@@ -16,12 +16,30 @@ from fastapi.responses import HTMLResponse, FileResponse
 from dotenv import load_dotenv
 
 ARCHIVO_MEMORIA = "memoria_erp.json"
+ARCHIVO_ERRORES_IA = "memoria_errores_ia.json"
+
+def cargar_errores_ia():
+    if os.path.exists(ARCHIVO_ERRORES_IA):
+        try:
+            with open(ARCHIVO_ERRORES_IA, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except: pass
+    return []
+
+def guardar_error_ia(nuevo_error):
+    errores = cargar_errores_ia()
+    if nuevo_error not in errores:
+        errores.append(nuevo_error)
+        with open(ARCHIVO_ERRORES_IA, "w", encoding="utf-8") as f:
+            json.dump(errores, f, ensure_ascii=False, indent=4)
 ULTIMO_REPORTE = [] # <-- NUEVA VARIABLE GLOBAL AÑADIDA AQUI
 
 PROGRESO_ACTUAL = {
     "porcentaje": 0,
     "mensaje": "Iniciando...",
-    "activo": False
+    "activo": False,
+    "exitos": 0,
+    "errores": 0
 }
 
 # Importar Pillow para validar el tamaño mínimo de 500x500px exigido por ML
@@ -60,14 +78,6 @@ os.makedirs(CARPETA_CATALOGOS, exist_ok=True)
 
 CARPETA_REPORTES = "reportes"
 os.makedirs(CARPETA_REPORTES, exist_ok=True)
-
-ARCHIVO_MEMORIA = "memoria_erp.json"
-
-PROGRESO_ACTUAL = {
-    "porcentaje": 0,
-    "mensaje": "Iniciando...",
-    "activo": False
-}
 
 CACHE_ATRIBUTOS_CAT = {}
 
@@ -613,7 +623,21 @@ HTML_INTERFACE = """
                         </select>
                         <button class="bulk-btn" onclick="aplicarEnvioMasivo()">Aplicar Envío</button>
 
+                        <button class="bulk-btn" onclick="refrescarFotosLocales(event)" style="background:#10b981; margin-left:8px;">📸 Emparejar / Refrescar Fotos de Carpeta</button>
+
                         <button id="btn-bulk-ia" class="bulk-btn" onclick="autollenarLoteIA()" style="margin-left:auto; background:#2563eb;">🤖 Generar Fichas Comerciales Masivas (IA DeepSeek)</button>
+                    </div>
+
+                    <!-- NUEVA BARRA DE VISTAS Y CONTADORES -->
+                    <div style="display: flex; justify-content: space-between; align-items: center; background: #e0f2fe; padding: 12px 20px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #bae6fd;">
+                        <div>
+                            <span style="font-weight: 800; color: #0369a1; margin-right: 10px;">👁️ Vista de la Tabla:</span>
+                            <button onclick="cambiarVistaTabla('categorias')" id="btn-vista-cat" style="background:#0284c7; padding:8px 15px; font-size:12px; border:none; color:white; border-radius:6px; cursor:pointer; font-weight:bold; margin-right:5px;">📂 Agrupado por Categorías</button>
+                            <button onclick="cambiarVistaTabla('lineal')" id="btn-vista-lineal" style="background:#94a3b8; padding:8px 15px; font-size:12px; border:none; color:white; border-radius:6px; cursor:pointer; font-weight:bold;">📋 Lineal (Orden Excel)</button>
+                        </div>
+                        <div style="font-size: 14px; font-weight: 800; color: #0f172a; display: flex; align-items: center; gap: 8px;">
+                            📈 Éxitos: <span id="contador-exitos" style="color:#16a34a; font-size:18px;">0</span> | ⚠️ Errores: <span id="contador-errores" style="color:#ef4444; font-size:18px;">0</span>
+                        </div>
                     </div>
 
                     <table class="data-table" id="data-table">
@@ -773,7 +797,8 @@ HTML_INTERFACE = """
             <p style="font-size: 13px; color: #475569; margin-top: 0;">Corrige estos detalles en la tabla principal y vuelve a presionar "Publicar Lote".</p>
             <div id="error-list-content" style="font-size: 13px; color: #7f1d1d; max-height: 400px; overflow-y: auto; background: #fef2f2; padding: 15px; border-radius: 8px; border: 1px solid #fca5a5;">
             </div>
-            <div style="display:flex; justify-content:flex-end; margin-top:20px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:20px; border-top:1px solid #fca5a5; padding-top:15px;">
+                <button onclick="corregirErroresConIA()" style="background:#2563eb; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">🤖 Corregir Errores con IA (Auto-Aprendizaje)</button>
                 <button onclick="cerrarModal('modal-errores-lista')" style="background:#ef4444; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">Cerrar</button>
             </div>
         </div>
@@ -826,6 +851,37 @@ HTML_INTERFACE = """
                 <button onclick="cerrarModal('modal-ver-descripcion')" style="background:#64748b; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;">Cerrar Vista Previa</button>
             </div>
         </div>
+    </div>
+    
+    <!-- MODAL PROGRESO IA MASIVA -->
+    <div id="modal-ia-progreso" class="modal-overlay">
+        <div class="modal-box" style="width: 500px; text-align: center; border-top: 6px solid #2563eb;">
+            <h3 style="color: #2563eb; border-bottom: none; margin-bottom: 10px;">🤖 Cerebro IA Trabajando...</h3>
+            <p style="font-size: 14px; color: #475569; margin-bottom: 20px;">Redactando descripciones y extrayendo fichas técnicas en lotes de 5. Por favor, no cierres esta ventana.</p>
+            <div style="background: #e2e8f0; border-radius: 10px; height: 20px; width: 100%; overflow: hidden; margin-bottom: 10px; border: 1px solid #cbd5e1;">
+                <div id="ia-progreso-barra" style="background: linear-gradient(90deg, #3b82f6, #2563eb); width: 0%; height: 100%; transition: width 0.4s ease;"></div>
+            </div>
+            <div style="font-weight: 800; color: #0f172a; font-size: 16px;">
+                <span id="ia-progreso-porcentaje">0</span>% Completado (<span id="ia-progreso-contador">0</span> de <span id="ia-progreso-total">0</span>)
+            </div>
+        </div>
+        <!-- MODAL PROGRESO PUBLICACION -->
+    <div id="modal-pub-progreso" class="modal-overlay">
+        <div class="modal-box" style="width: 500px; text-align: center; border-top: 6px solid #16a34a;">
+            <h3 style="color: #16a34a; border-bottom: none; margin-bottom: 10px;">🚀 Publicando Lote en Mercado Libre...</h3>
+            <p id="pub-loader-mensaje" style="font-size: 14px; color: #475569; margin-bottom: 20px;">Subiendo artículos, vinculando fotos y armando descripciones.</p>
+            <div style="background: #e2e8f0; border-radius: 10px; height: 20px; width: 100%; overflow: hidden; margin-bottom: 10px; border: 1px solid #cbd5e1;">
+                <div id="pub-progreso-barra" style="background: linear-gradient(90deg, #22c55e, #16a34a); width: 0%; height: 100%; transition: width 0.4s ease;"></div>
+            </div>
+            <div style="font-weight: 800; color: #0f172a; font-size: 16px;">
+                <span id="pub-progreso-porcentaje">0</span>% Completado (<span id="pub-progreso-contador">0</span> de <span id="pub-progreso-total">0</span>)
+            </div>
+            <div style="margin-top: 15px; display: flex; justify-content: space-around; font-size: 14px; font-weight: bold; background:#f0fdf4; padding:10px; border-radius:8px;">
+                <span style="color: #16a34a;">✅ Éxitos: <span id="pub-exitos">0</span></span>
+                <span style="color: #ef4444;">❌ Errores: <span id="pub-errores">0</span></span>
+            </div>
+        </div>
+    </div>
     </div>
 
     <script>
@@ -1092,8 +1148,32 @@ HTML_INTERFACE = """
                 try {
                     const res = await fetch('/estado-progreso');
                     const info = await res.json();
+                    
+                    // Actualiza zona estándar
                     document.getElementById('spinner-percentage').innerText = info.porcentaje + "%";
                     document.getElementById('loader-mensaje').innerText = info.mensaje;
+                    
+                    // Actualiza contadores principales
+                    if(info.exitos !== undefined) {
+                        document.getElementById('contador-exitos').innerText = info.exitos;
+                        const px = document.getElementById('pub-exitos');
+                        if (px) px.innerText = info.exitos;
+                    }
+                    if(info.errores !== undefined) {
+                        document.getElementById('contador-errores').innerText = info.errores;
+                        const pe = document.getElementById('pub-errores');
+                        if (pe) pe.innerText = info.errores;
+                    }
+                    
+                    // Actualiza el modal de publicación si está abierto
+                    const pBarra = document.getElementById('pub-progreso-barra');
+                    if(pBarra) {
+                        document.getElementById('pub-progreso-porcentaje').innerText = info.porcentaje;
+                        pBarra.style.width = info.porcentaje + "%";
+                        document.getElementById('pub-loader-mensaje').innerText = info.mensaje;
+                        const cuentaItems = (info.exitos || 0) + (info.errores || 0);
+                        document.getElementById('pub-progreso-contador').innerText = cuentaItems;
+                    }
 
                     if (!info.activo && info.porcentaje >= 100) {
                         clearInterval(intervaloProgreso);
@@ -1101,6 +1181,31 @@ HTML_INTERFACE = """
                     }
                 } catch(e) {}
             }, 250);
+        }
+
+        // NUEVA FUNCIÓN PARA CAMBIAR VISTAS DINÁMICAMENTE
+        function cambiarVistaTabla(vista) {
+            const tbody = document.getElementById('tabla-body');
+            const filas = Array.from(tbody.querySelectorAll('tr.item-row'));
+            const headers = Array.from(tbody.querySelectorAll('tr.cat-header'));
+
+            if (vista === 'lineal') {
+                headers.forEach(h => h.style.display = 'none');
+                filas.sort((a, b) => parseInt(a.dataset.fila) - parseInt(b.dataset.fila));
+                filas.forEach(f => tbody.appendChild(f)); // Reordena en el DOM
+                document.getElementById('btn-vista-lineal').style.background = '#0284c7';
+                document.getElementById('btn-vista-cat').style.background = '#94a3b8';
+            } else {
+                headers.forEach(h => h.style.display = 'table-row');
+                headers.forEach(header => {
+                    tbody.appendChild(header);
+                    const targetClass = header.querySelector('input').getAttribute('data-target');
+                    const catFilas = filas.filter(f => f.classList.contains(targetClass));
+                    catFilas.forEach(f => tbody.appendChild(f));
+                });
+                document.getElementById('btn-vista-lineal').style.background = '#94a3b8';
+                document.getElementById('btn-vista-cat').style.background = '#0284c7';
+            }
         }
 
         function toggleGtin(idx) {
@@ -1361,6 +1466,52 @@ HTML_INTERFACE = """
             const envioVal = document.getElementById('bulk-envio').value;
             document.querySelectorAll('.select-envio').forEach(sel => sel.value = envioVal);
         }
+        
+        async function refrescarFotosLocales(event) {
+            const checks = document.querySelectorAll('.prod-check:checked');
+            if (!checks.length) return alert('No hay artículos seleccionados para actualizar.');
+
+            const btn = event.currentTarget || event.target;
+            const textoOriginal = btn.innerHTML;
+            btn.innerHTML = '⏳ Buscando fotos en carpeta...';
+            btn.disabled = true;
+
+            const peticiones = [];
+            checks.forEach(cb => {
+                const idx = cb.dataset.idx;
+                peticiones.push({
+                    "idx": idx,
+                    "sku": document.getElementById('sku-'+idx).value,
+                    "modelo": document.getElementById('mod-'+idx).value,
+                    "titulo": document.getElementById('tit-'+idx).value
+                });
+            });
+
+            try {
+                const res = await fetch('/api/refrescar-fotos', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(peticiones)
+                });
+                const resultados = await res.json();
+
+                let actualizadas = 0;
+                resultados.forEach(item => {
+                    if (item.b64) {
+                        // Vinculamos la foto encontrada y refrescamos la interfaz visual
+                        imagenesPorFila[item.idx] = [item.b64];
+                        renderizarGaleriaFila(item.idx);
+                        actualizadas++;
+                    }
+                });
+                alert(`✅ Se emparejaron las fotos de ${actualizadas} artículos desde la carpeta "lote_imagenes".`);
+            } catch(e) {
+                alert('❌ Ocurrió un error al intentar refrescar las fotos.');
+            } finally {
+                btn.innerHTML = textoOriginal;
+                btn.disabled = false;
+            }
+        }
 
         async function abrirModalCategorias() {
             const fileInput = document.getElementById('file-db');
@@ -1504,7 +1655,7 @@ HTML_INTERFACE = """
                         }
 
                         tbody.innerHTML += `
-                            <tr id="row-${idx}" class="item-row ${catIdClase}">
+                            <tr id="row-${idx}" class="item-row ${catIdClase}" data-fila="${prod.FilaExcel}">
                                 <td><input type="checkbox" class="prod-check" data-idx="${idx}" checked></td>
                                 <td>
                                     <input type="text" id="tit-${idx}" value="${prod.Titulo}" maxlength="60" style="margin-bottom:4px; font-weight:bold;">
@@ -1654,6 +1805,17 @@ HTML_INTERFACE = """
             document.getElementById('loader-zona').style.display = 'block';
             document.getElementById('spinner-percentage').innerText = "0%";
             document.getElementById('loader-mensaje').innerText = "Iniciando publicación en lote...";
+            iniciarMonitoreoProgreso();// ACTIVAR NUEVO MODAL DE PUBLICACIÓN EN VIVO
+            const modalPub = document.getElementById('modal-pub-progreso');
+            document.getElementById('pub-progreso-total').innerText = total_items;
+            document.getElementById('pub-progreso-contador').innerText = "0";
+            document.getElementById('pub-progreso-porcentaje').innerText = "0";
+            document.getElementById('pub-exitos').innerText = "0";
+            document.getElementById('pub-errores').innerText = "0";
+            document.getElementById('pub-progreso-barra').style.width = "0%";
+            modalPub.style.display = 'flex';
+            setTimeout(() => modalPub.classList.add('active'), 10);
+            
             iniciarMonitoreoProgreso();
 
             const consola = document.getElementById('resultados');
@@ -1716,8 +1878,9 @@ HTML_INTERFACE = """
             } catch(e) {
                 consola.innerText = "❌ Error subiendo lote: " + e;
             } finally {
+                window.erroresInteractiviosActuales = resData ? resData.errores_idx : {}; // Guardamos los errores para la IA
                 if (intervaloProgreso) clearInterval(intervaloProgreso);
-                setTimeout(() => { document.getElementById('loader-zona').style.display = 'none'; }, 500);
+                cerrarModal('modal-pub-progreso');
             }
         }
 
@@ -1918,71 +2081,173 @@ HTML_INTERFACE = """
 
         async function autollenarLoteIA() {
             const checks = document.querySelectorAll('.prod-check:checked');
-            if (!checks.length) return alert('No hay artículos seleccionados para analizar.');
             
-            if (!confirm(`¿Iniciar análisis IA para ${checks.length} artículos? Generará fichas y descripciones comerciales. Es un proceso asombroso, ¡prepárate para la magia!`)) return;
+            // Filtrar los checks para ignorar las filas que se hayan ocultado exitosamente en una publicación previa
+            const validChecks = Array.from(checks).filter(cb => {
+                const filaVisual = document.getElementById('row-' + cb.dataset.idx);
+                return !(filaVisual && filaVisual.classList.contains('fade-out'));
+            });
 
-            const btn = document.getElementById('btn-bulk-ia');
-            const textoOriginal = btn.innerHTML;
-            btn.innerHTML = '⏳ Procesando Lote con IA...';
-            btn.disabled = true;
+            if (!validChecks.length) return alert('No hay artículos válidos seleccionados para analizar.');
+            
+            if (!confirm(`¿Iniciar análisis IA masivo para ${validChecks.length} artículos? El sistema procesará en lotes de 10 simultáneos.`)) return;
 
-            for (let i = 0; i < checks.length; i++) {
-                const idx = checks[i].dataset.idx;
+            // Reiniciar y mostrar la barra de progreso
+            const totalItems = validChecks.length;
+            let procesados = 0;
+            
+            document.getElementById('ia-progreso-total').innerText = totalItems;
+            document.getElementById('ia-progreso-contador').innerText = "0";
+            document.getElementById('ia-progreso-porcentaje').innerText = "0";
+            document.getElementById('ia-progreso-barra').style.width = "0%";
+            
+            const modalIA = document.getElementById('modal-ia-progreso');
+            modalIA.style.display = 'flex';
+            setTimeout(() => modalIA.classList.add('active'), 10);
+
+            // Procesar en lotes de 10 (Optimización Máxima Segura)
+            const TAMANO_LOTE = 10;
+            
+            for (let i = 0; i < validChecks.length; i += TAMANO_LOTE) {
+                // Extraer el subgrupo de 5 artículos
+                const loteActual = validChecks.slice(i, i + TAMANO_LOTE);
                 
-                const filaVisual = document.getElementById('row-'+idx);
-                if(filaVisual && filaVisual.classList.contains('fade-out')) {
-                    continue; 
-                }
+                // Mapear las 5 promesas simultáneas
+                const promesasLote = loteActual.map(async (cb) => {
+                    const idx = cb.dataset.idx;
+                    const titVal = document.getElementById('tit-'+idx).value;
+                    const catId = document.getElementById('cat-'+idx).value;
+                    const skuVal = document.getElementById('sku-'+idx).value;
+                    const resumenDiv = document.getElementById('resumen-attr-'+idx);
 
-                const titVal = document.getElementById('tit-'+idx).value;
-                const catId = document.getElementById('cat-'+idx).value;
-                const skuVal = document.getElementById('sku-'+idx).value;
-                const resumenDiv = document.getElementById('resumen-attr-'+idx);
+                    resumenDiv.innerHTML = "⏳ <b style='color:#2563eb;'>DeepSeek analizando... ✨</b>";
+                    
+                    const fd = new FormData();
+                    fd.append('titulo', titVal);
+                    fd.append('cat_id', catId);
+                    fd.append('sku', skuVal);
 
-                resumenDiv.innerHTML = "⏳ <b style='color:#2563eb;'>DeepSeek analizando... ✨</b>";
-                
-                const fd = new FormData();
-                fd.append('titulo', titVal);
-                fd.append('cat_id', catId);
-                fd.append('sku', skuVal);
+                    try {
+                        const res = await fetch('/api/autollenar-atributos-ia', { method: 'POST', body: fd });
+                        const data = await res.json();
 
-                try {
-                    const res = await fetch('/api/autollenar-atributos-ia', { method: 'POST', body: fd });
-                    const data = await res.json();
+                        if (data.atributos) {
+                            if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
+                            for (const [idAttr, valIA] of Object.entries(data.atributos)) {
+                                const idUpper = String(idAttr).trim().toUpperCase();
+                                atributosAdicionalesPorFila[idx][idUpper] = valIA;
+                            }
 
-                    if (data.atributos) {
-                        if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
-                        for (const [idAttr, valIA] of Object.entries(data.atributos)) {
-                            const idUpper = String(idAttr).trim().toUpperCase();
-                            atributosAdicionalesPorFila[idx][idUpper] = valIA;
+                            if (data.descripcion && data.descripcion.trim() !== "") {
+                                document.getElementById('desc-init-'+idx).value = data.descripcion;
+                                const badge = document.getElementById('desc-tag-'+idx);
+                                badge.innerText = "✨ Desc. IA Generada";
+                                badge.style.backgroundColor = "#fef08a";
+                                badge.style.color = "#854d0e";
+                                badge.style.boxShadow = "0 0 10px rgba(254, 240, 138, 0.5)";
+                            }
+
+                            actualizarResumenAtributos(idx);
+                            resumenDiv.innerHTML = `<div style="background:#dcfce7; border:1px solid #86efac; padding:6px; border-radius:6px; margin-top:6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">✅ <span style="color:#166534; font-weight:bold; font-size:11px;">Optimizador IA Finalizado</span></div>` + resumenDiv.innerHTML;
+                        } else if (data.error) {
+                            resumenDiv.innerHTML = `❌ <span style="color:red;">Error: ${data.error}</span>`;
                         }
-
-                        if (data.descripcion && data.descripcion.trim() !== "") {
-                            document.getElementById('desc-init-'+idx).value = data.descripcion;
-                            const badge = document.getElementById('desc-tag-'+idx);
-                            badge.innerText = "✨ Desc. IA Generada";
-                            badge.style.backgroundColor = "#fef08a";
-                            badge.style.color = "#854d0e";
-                            badge.style.boxShadow = "0 0 10px rgba(254, 240, 138, 0.5)";
-                        }
-
-                        actualizarResumenAtributos(idx);
-                        
-                        resumenDiv.innerHTML = `<div style="background:#dcfce7; border:1px solid #86efac; padding:6px; border-radius:6px; margin-top:6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">✅ <span style="color:#166534; font-weight:bold; font-size:11px;">Optimizador IA Finalizado</span></div>` + resumenDiv.innerHTML;
-                    } else if (data.error) {
-                        resumenDiv.innerHTML = `❌ <span style="color:red;">Error: ${data.error}</span>`;
+                    } catch(e) {
+                        resumenDiv.innerHTML = `❌ <span style="color:red;">Fallo de conexión IA (Timeout)</span>`;
                     }
-                } catch(e) {
-                    resumenDiv.innerText = "❌ Fallo de red conectando con la IA";
-                }
+
+                    // Actualizar UI individual
+                    procesados++;
+                    const porcentaje = Math.round((procesados / totalItems) * 100);
+                    document.getElementById('ia-progreso-contador').innerText = procesados;
+                    document.getElementById('ia-progreso-porcentaje').innerText = porcentaje;
+                    document.getElementById('ia-progreso-barra').style.width = porcentaje + "%";
+                });
+
+                // Promise.all hace que se disparen las 5 peticiones a la vez y espera a que las 5 terminen
+                await Promise.all(promesasLote);
                 
-                await new Promise(r => setTimeout(r, 800));
+                // Pausa de 2 segundos para permitir a la API respirar entre lotes grandes
+                await new Promise(r => setTimeout(r, 2000));
             }
 
-            btn.innerHTML = textoOriginal;
-            btn.disabled = false;
+            // Cerrar modal al finalizar todo
+            cerrarModal('modal-ia-progreso');
             alert("✅ ¡Autollenado de Fichas y Descripciones Masivo completado con éxito!");
+        }
+        
+        async function corregirErroresConIA() {
+            const errores = window.erroresInteractiviosActuales || {};
+            const indicesErrores = Object.keys(errores);
+            
+            if (indicesErrores.length === 0) return alert("No hay errores recientes almacenados para corregir.");
+            
+            if (!confirm(`¿Iniciar IA de Auto-Aprendizaje para corregir ${indicesErrores.length} artículos basándose en el motivo de rechazo de ML?`)) return;
+
+            cerrarModal('modal-errores-lista');
+            
+            // Reutilizamos el modal de progreso de IA
+            const modalIA = document.getElementById('modal-ia-progreso');
+            document.getElementById('ia-progreso-total').innerText = indicesErrores.length;
+            document.getElementById('ia-progreso-contador').innerText = "0";
+            document.getElementById('ia-progreso-porcentaje').innerText = "0";
+            document.getElementById('ia-progreso-barra').style.width = "0%";
+            modalIA.style.display = 'flex';
+            setTimeout(() => modalIA.classList.add('active'), 10);
+
+            let procesados = 0;
+            const TAMANO_LOTE = 10; 
+
+            for (let i = 0; i < indicesErrores.length; i += TAMANO_LOTE) {
+                const loteActual = indicesErrores.slice(i, i + TAMANO_LOTE);
+                
+                const promesasLote = loteActual.map(async (idx) => {
+                    const titVal = document.getElementById('tit-'+idx).value;
+                    const catId = document.getElementById('cat-'+idx).value;
+                    const skuVal = document.getElementById('sku-'+idx).value;
+                    const errorML = errores[idx]; // El error exacto devuelto por la API
+                    
+                    const resumenDiv = document.getElementById('resumen-attr-'+idx);
+                    resumenDiv.innerHTML = "⏳ <b style='color:#ef4444;'>IA Aprendiendo del Error... ✨</b>";
+                    
+                    const fd = new FormData();
+                    fd.append('titulo', titVal);
+                    fd.append('cat_id', catId);
+                    fd.append('sku', skuVal);
+                    fd.append('error_previo', errorML); // Se envía a la IA para que aprenda
+
+                    try {
+                        const res = await fetch('/api/autollenar-atributos-ia', { method: 'POST', body: fd });
+                        const data = await res.json();
+
+                        if (data.atributos) {
+                            if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
+                            for (const [idAttr, valIA] of Object.entries(data.atributos)) {
+                                const idUpper = String(idAttr).trim().toUpperCase();
+                                atributosAdicionalesPorFila[idx][idUpper] = valIA;
+                            }
+                            if (data.descripcion && data.descripcion.trim() !== "") {
+                                document.getElementById('desc-init-'+idx).value = data.descripcion;
+                            }
+                            actualizarResumenAtributos(idx);
+                            resumenDiv.innerHTML = `<div style="background:#dcfce7; border:1px solid #86efac; padding:6px; border-radius:6px; margin-top:6px;">✅ <span style="color:#166534; font-weight:bold; font-size:11px;">Error Corregido por IA</span></div>` + resumenDiv.innerHTML;
+                        } else if (data.error) {
+                            resumenDiv.innerHTML = `❌ <span style="color:red;">Error: ${data.error}</span>`;
+                        }
+                    } catch(e) { }
+
+                    procesados++;
+                    const pct = Math.round((procesados / indicesErrores.length) * 100);
+                    document.getElementById('ia-progreso-contador').innerText = procesados;
+                    document.getElementById('ia-progreso-porcentaje').innerText = pct;
+                    document.getElementById('ia-progreso-barra').style.width = pct + "%";
+                });
+
+                await Promise.all(promesasLote);
+                await new Promise(r => setTimeout(r, 2000));
+            }
+            cerrarModal('modal-ia-progreso');
+            alert("✅ Corrección y Aprendizaje finalizado. La IA ha memorizado estos errores para no repetirlos. Ya puedes intentar 'Publicar Lote' nuevamente.");
         }
     </script>
 </body>
@@ -2109,7 +2374,8 @@ def endpoint_galeria_local():
 def autollenar_atributos_ia(
     titulo: str = Form(...),
     cat_id: str = Form(...),
-    sku: str = Form("")
+    sku: str = Form(""),
+    error_previo: str = Form("") # <-- NUEVO: Recibe el error de ML
 ):
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
@@ -2157,6 +2423,10 @@ def autollenar_atributos_ia(
         texto_oblig = "\n".join(lista_obligatorios) if lista_obligatorios else "Ninguno estrictamente obligatorio."
         texto_opcio = "\n".join(lista_opcionales) if lista_opcionales else "Ninguno adicional."
 
+        # Cargar memoria de aprendizaje
+        errores_historicos = cargar_errores_ia()
+        historial_texto = "\n".join([f"- {e}" for e in errores_historicos[-15:]]) if errores_historicos else "Ninguno."
+
         prompt = f"""Eres un experto catalogador y redactor de ventas para Mercado Libre.
 Dado el siguiente producto tecnológico/electrónico:
 - Título: "{titulo}"
@@ -2172,15 +2442,22 @@ Atributos OBLIGATORIOS (DEBES incluirlos en el JSON):
 Atributos OPCIONALES (inclúyelos SOLO si tienes información exacta):
 {texto_opcio}
 
+HISTORIAL DE ERRORES A EVITAR (Aprende de esto y NO los cometas):
+{historial_texto}
+
 Reglas estrictas e inquebrantables:
-1. Responde SOLO con un JSON válido. NADA de texto adicional (sin etiquetas de código).
+1. Responde SOLO con un JSON válido. NADA de texto adicional.
 2. El JSON debe contener la clave exacta "DESCRIPCION_COMERCIAL".
 3. Las demás claves deben ser EXACTAMENTE el ID del atributo técnico.
 4. OBLIGATORIOS: ¡Nunca vacíos! Si no sabes el dato, usa "Genérico", "Universal" o "Estándar". (PROHIBIDO USAR "N/A" o "No Aplica").
 5. OPCIONALES: Si no tienes el dato, SIMPLEMENTE OMÍTELO DEL JSON.
-6. OPCIONES VÁLIDAS: Si un atributo tiene "(Opciones válidas: ...)" en la lista de arriba, es OBLIGATORIO que elijas EXACTAMENTE una de esas palabras (Ejemplo: Si pide SALE_FORMAT, elige "Unidad").
-7. REGLA DE ORO PARA MEDIDAS: Si el atributo es numérico (capacidad, tamaño, frecuencia, voltaje) y NO tiene opciones válidas dadas, DEBE INCLUIR LA UNIDAD DE MEDIDA (ej. "8 GB", "15.6 pulgadas", "144 Hz").
+6. OPCIONES VÁLIDAS: Si hay opciones dadas, debes elegir EXACTAMENTE una de ellas.
+7. REGLA DE ORO PARA MEDIDAS: Todo atributo numérico (capacidad, tamaño, frecuencia) DEBE INCLUIR LA UNIDAD DE MEDIDA (ej. "8 GB", "15.6 pulgadas", "144 Hz").
 """
+        # Si viene un error previo de este artículo, inyectarlo como directriz urgente
+        if error_previo:
+            guardar_error_ia(error_previo)
+            prompt += f"\n¡URGENTE! Tu intento anterior para este artículo fue RECHAZADO por este error exacto:\n'{error_previo}'\nDEBES corregir ese atributo o cambiar su formato para cumplir con Mercado Libre.\n"
 
         headers_or = {
             "Authorization": f"Bearer {api_key}",
@@ -2196,7 +2473,7 @@ Reglas estrictas e inquebrantables:
         }
 
         url_openrouter = "https://" + "openrouter.ai/api/v1/chat/completions"
-        res_or = requests.post(url_openrouter, headers=headers_or, json=payload_or, timeout=15)
+        res_or = requests.post(url_openrouter, headers=headers_or, json=payload_or, timeout=60)
         
         if res_or.status_code != 200:
             return {"error": f"Error API OpenRouter ({res_or.status_code})"}
@@ -2290,8 +2567,32 @@ def api_sincronizar_memoria():
     with open(ARCHIVO_MEMORIA, "w", encoding="utf-8") as f:
         json.dump(memoria, f, ensure_ascii=False, indent=4)
         
-    print(f"Guardado físico completado. Total nuevos agregados: {total_nuevos}")
     return {"mensaje": f"Sincronización finalizada. Se guardaron {total_nuevos} datos nuevos en la memoria local."}
+
+
+# ------ AQUÍ PEGAS EL PUNTO 4 ------
+@app.post("/api/refrescar-fotos")
+def api_refrescar_fotos(items: list[dict]):
+    """Endpoint para buscar nuevamente las fotos locales basándose en los datos editados de la tabla."""
+    resultados = []
+    for item in items:
+        idx = item.get("idx")
+        sku = item.get("sku", "")
+        modelo = item.get("modelo", "")
+        titulo = item.get("titulo", "")
+        
+        # Volvemos a lanzar la función emparejadora con la data actualizada
+        img_b64, alerta = emparejar_imagen_local(modelo, sku, titulo)
+        
+        if img_b64:
+            resultados.append({
+                "idx": idx,
+                "b64": img_b64
+            })
+            
+    return resultados
+# -----------------------------------
+
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -2448,15 +2749,12 @@ def previsualizar_archivo(
             if motivo_estado.startswith("✅") and not coincide_con_categoria_elegida(titulo, cat_id, categoria_filtro):
                 motivo_estado = f"🚫 Omitido (No coincide con la categoría filtro: {categoria_filtro})"
 
-        reporte_filas.append({
-            "Fila Excel": idx_inicio + indice + 2,
-            "SKU": sku,
-            "Título del Producto": titulo,
-            "Categoría Detectada": cat_nombre,
-            "Precio": precio,
-            "Stock": stock,
-            "Estado": motivo_estado
-        })
+        # Copiamos la fila original entera y le añadimos nuestras columnas de auditoría al final
+        fila_completa = item.copy()
+        fila_completa["Fila Original Excel"] = idx_inicio + indice + 2
+        fila_completa["Categoría Detectada ML"] = cat_nombre
+        fila_completa["Estado Publicación"] = motivo_estado
+        reporte_filas.append(fila_completa)
 
         if "🚫" in motivo_estado:
             omitidos_count += 1
@@ -2468,6 +2766,7 @@ def previsualizar_archivo(
         imagen_emparejada, alerta_imagen = emparejar_imagen_local(modelo, sku, titulo)
         
         productos_activos.append({
+            "FilaExcel": idx_inicio + indice + 2, # <-- NUEVO: Guarda la posición original
             "Titulo": titulo, "Precio": precio, "Stock": stock,
             "Marca": marca, "Modelo": modelo, "SKU": sku, 
             "Color": "", "Compatibilidad": "", "Material": "",
@@ -2480,30 +2779,44 @@ def previsualizar_archivo(
         })
 
     global ULTIMO_REPORTE
-    ULTIMO_REPORTE = reporte_filas # Se guarda solo en memoria RAM
+    # Guardamos ambos grupos para el Excel: El original completo y los que pasaron el filtro
+    ULTIMO_REPORTE = {
+        "todos": reporte_filas,
+        "procesados": [f for f in reporte_filas if "✅" in f.get("Estado Publicación", "")]
+    }
 
-    if os.path.exists(temp_filename): os.remove(temp_filename)
-    actualizar_progreso(100, "¡Sincronización Finalizada!")
     PROGRESO_ACTUAL["activo"] = False
     
     return {
-        "productos": sorted(productos_activos, key=lambda x: x["CategoriaNombre"]),
+        "productos": sorted(productos_activos, key=lambda x: x["FilaExcel"]),
         "total_leidos": total_filas,
         "total_aprobados": aprobados_count,
         "total_omitidos": omitidos_count,
-        "archivo_reporte": "ultimo" # Esto avisa al backend que use el de la memoria RAM
+        "archivo_reporte": "ultimo"
     }
 
 @app.get("/api/descargar-reporte/{nombre_archivo}")
 def descargar_reporte(nombre_archivo: str):
     if nombre_archivo == "ultimo":
         global ULTIMO_REPORTE
-        if not ULTIMO_REPORTE:
+        if not ULTIMO_REPORTE or "todos" not in ULTIMO_REPORTE:
             return {"error": "No hay un reporte reciente para descargar."}
             
-        df_rep = pd.DataFrame(ULTIMO_REPORTE)
         stream = io.BytesIO()
-        df_rep.to_excel(stream, index=False, engine='openpyxl')
+        # Usamos ExcelWriter para crear múltiples hojas en el mismo archivo
+        with pd.ExcelWriter(stream, engine='openpyxl') as writer:
+            # Hoja 1: Todo el rango original escaneado con sus estados
+            df_todos = pd.DataFrame(ULTIMO_REPORTE["todos"])
+            df_todos.to_excel(writer, sheet_name="Inventario Original", index=False)
+            
+            # Hoja 2: Únicamente los artículos que pasaron el filtro y están en pantalla
+            df_procesados = pd.DataFrame(ULTIMO_REPORTE["procesados"])
+            if not df_procesados.empty:
+                df_procesados.to_excel(writer, sheet_name="Aprobados - Listos", index=False)
+            else:
+                # Si no hubo aprobados, creamos una hoja vacía con un mensaje
+                pd.DataFrame([{"Mensaje": "No hubo artículos aprobados"}]).to_excel(writer, sheet_name="Aprobados - Listos", index=False)
+                
         stream.seek(0)
         
         headers = {
@@ -2511,7 +2824,7 @@ def descargar_reporte(nombre_archivo: str):
         }
         return StreamingResponse(stream, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers)
 
-    # Por si intentas descargar un archivo viejo que sí está en el disco
+    # Por si intentas descargar un archivo viejo que sí está físicamente en el disco
     ruta = os.path.join(CARPETA_REPORTES, nombre_archivo)
     if os.path.exists(ruta):
         return FileResponse(ruta, filename=nombre_archivo)
@@ -2520,6 +2833,8 @@ def descargar_reporte(nombre_archivo: str):
 @app.post("/publicar-lote")
 def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
     PROGRESO_ACTUAL["activo"] = True
+    PROGRESO_ACTUAL["exitos"] = 0
+    PROGRESO_ACTUAL["errores"] = 0
     archivos_destino = listar_archivos_token() if cuenta == "TODAS" else [cuenta]
     logs_totales = []
     errores_interactivos = {}
@@ -2664,6 +2979,7 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                         pass
                         
                     logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO! -> {permalink}")
+                    PROGRESO_ACTUAL["exitos"] += 1
                     
                     # Carga exitosa: Añadimos a la memoria local y al archivo
                     titulos_memoria_programa.add(titulo_norm)
@@ -2697,6 +3013,7 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                             requests.put(url_put, headers=headers, json={"title": titulo_original}, timeout=10)
                             requests.put(url_put, headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=10)
                             logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO (Bypass Catálogo)! -> {permalink}")
+                            PROGRESO_ACTUAL["exitos"] += 1
                             
                             titulos_memoria_programa.add(titulo_norm)
                             if sku_norm and sku_norm != "nan":
@@ -2706,13 +3023,16 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                         else:
                             detalles = analizar_error_ml(res_bypass)
                             logs_totales.append(f"❌ [{nombre_perfil}] Error '{titulo_original[:15]}...': {detalles}")
+                            PROGRESO_ACTUAL["errores"] += 1
                             if idx_front: errores_interactivos[idx_front] = detalles
                     else:
                         detalles = analizar_error_ml(respuesta)
                         logs_totales.append(f"❌ [{nombre_perfil}] Error '{titulo_original[:15]}...': {detalles}")
+                        PROGRESO_ACTUAL["errores"] += 1
                         if idx_front: errores_interactivos[idx_front] = detalles
             except Exception as e_req:
                 logs_totales.append(f"❌ [{nombre_perfil}] Excepción enviando '{titulo_original[:15]}...': {str(e_req)}")
+                PROGRESO_ACTUAL["errores"] += 1
                 if idx_front: errores_interactivos[idx_front] = "Problema de conexión con el servidor ML."
 
     actualizar_progreso(100, "¡Lote Completado!")
