@@ -584,10 +584,16 @@ HTML_INTERFACE = """
                     </div>
                     <div class="step-card">
                         <span class="step-num">Paso 5</span>
-                        <label>Ocultar Publicados:</label>
-                        <div style="display: flex; align-items: center; gap: 8px; margin-top: 10px;">
-                            <input type="checkbox" id="filtar-duplicados" checked style="width: auto;">
-                            <span style="font-size: 12px; font-weight: 600; color: #475569;">Solo mostrar Libres</span>
+                        <label>Filtros de Duplicidad:</label>
+                        <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 6px;">
+                            <label style="font-weight: 600; font-size: 12px; color: #475569; display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                                <input type="checkbox" id="filtar-duplicados" checked style="width: auto;">
+                                Solo mostrar No Publicados
+                            </label>
+                            <label style="font-weight: 600; font-size: 12px; color: #0284c7; display: flex; align-items: center; gap: 6px; cursor: pointer;" title="Si está desmarcado, solo verificará la cuenta seleccionada en el Paso 1.">
+                                <input type="checkbox" id="verificar-todas-cuentas" style="width: auto;">
+                                Validar contra todas las cuentas
+                            </label>
                         </div>
                     </div>
                 </div>
@@ -1165,20 +1171,29 @@ HTML_INTERFACE = """
         }
         
         async function sincronizarMemoriaML() {
+            // 🟢 LEEMOS LA CUENTA QUE TIENES SELECCIONADA EN PANTALLA
+            const cuentaSel = document.getElementById('cuenta-select').value;
+            const fd = new FormData();
+            fd.append('cuenta', cuentaSel);
+
             document.getElementById('loader-zona').style.display = 'block';
             document.getElementById('spinner-percentage').innerText = "0%";
             document.getElementById('loader-mensaje').innerText = "Conectando con Mercado Libre...";
             
-            // 🟢 ESTO ENCIENDE LA BARRA DE PROGRESO ANIMADA
-            iniciarMonitoreoProgreso(); 
+            iniciarMonitoreoProgreso();
             
             try {
-                const res = await fetch('/api/sincronizar-memoria-ml', { method: 'POST' });
+                // 🟢 MANDAMOS LA CUENTA AL BACKEND
+                const res = await fetch('/api/sincronizar-memoria-ml', { method: 'POST', body: fd });
                 const data = await res.json();
                 if (data.error) alert("Error: " + data.error);
                 else alert("✅ " + data.mensaje);
             } catch(e) {
                 alert("❌ Error conectando con el servidor.");
+            } finally {
+                if (intervaloProgreso) clearInterval(intervaloProgreso);
+                document.getElementById('spinner-percentage').innerText = "100%";
+                setTimeout(() => { document.getElementById('loader-zona').style.display = 'none'; }, 400);
             }
         }
 
@@ -1191,11 +1206,9 @@ HTML_INTERFACE = """
                     const res = await fetch('/estado-progreso');
                     const info = await res.json();
                     
-                    // Actualiza zona estándar
                     document.getElementById('spinner-percentage').innerText = info.porcentaje + "%";
                     document.getElementById('loader-mensaje').innerText = info.mensaje;
                     
-                    // Actualiza contadores principales
                     if(info.exitos !== undefined) {
                         document.getElementById('contador-exitos').innerText = info.exitos;
                         const px = document.getElementById('pub-exitos');
@@ -1207,7 +1220,6 @@ HTML_INTERFACE = """
                         if (pe) pe.innerText = info.errores;
                     }
                     
-                    // Actualiza el modal de publicación si está abierto
                     const pBarra = document.getElementById('pub-progreso-barra');
                     if(pBarra) {
                         document.getElementById('pub-progreso-porcentaje').innerText = info.porcentaje;
@@ -1216,19 +1228,22 @@ HTML_INTERFACE = """
                         const cuentaItems = (info.exitos || 0) + (info.errores || 0);
                         document.getElementById('pub-progreso-contador').innerText = cuentaItems;
                         
-                        // FORZAR APARICIÓN DEL BOTÓN SI YA LLEGÓ AL 100%
                         if(info.porcentaje >= 100) {
                             document.getElementById('btn-cerrar-pub').style.display = 'block';
                         }
                     }
 
-                    if (!info.activo && info.porcentaje >= 100) {
+                    // 🟢 SI YA TERMINÓ (activo == false), FUERZA 100% Y CIERRA
+                    if (!info.activo) {
                         clearInterval(intervaloProgreso);
-                        setTimeout(() => { document.getElementById('loader-zona').style.display = 'none'; }, 800);
+                        document.getElementById('spinner-percentage').innerText = "100%";
+                        setTimeout(() => { document.getElementById('loader-zona').style.display = 'none'; }, 500);
                     }
                 } catch(e) {}
             }, 250);
         }
+
+        
 
         // NUEVA FUNCIÓN PARA CAMBIAR VISTAS DINÁMICAMENTE
         function cambiarVistaTabla(vista) {
@@ -1717,47 +1732,42 @@ HTML_INTERFACE = """
             formData.append('cuenta', document.getElementById('cuenta-select').value);
             formData.append('hoja', document.getElementById('hoja-select').value);
             
-            // Si eligió cantidad exacta, mandamos el límite y un inicio base
             formData.append('inicio', document.getElementById('rango-inicio').value || 1);
             formData.append('fin', (modo === 'rango') ? (document.getElementById('rango-fin').value || 100) : 999999);
             formData.append('cantidad_limite', (modo === 'cantidad') ? (document.getElementById('cantidad-limite').value || 0) : 0);
             
             formData.append('categoria_filtro', idCatDefecto);
             formData.append('filtrar_duplicados', document.getElementById('filtar-duplicados').checked);
+            // 🟢 NUEVO: Indica si validar contra todas o solo la cuenta elegida
+            formData.append('verificar_todas', document.getElementById('verificar-todas-cuentas').checked);
 
             formData.append('col_tit', document.getElementById('map-tit').value);
             formData.append('col_sku', document.getElementById('map-sku').value);
             formData.append('col_mod', document.getElementById('map-mod').value);
             formData.append('col_pre', document.getElementById('map-pre').value);
             formData.append('col_stk', document.getElementById('map-stk').value);
-            
-            
-            
 
             document.getElementById('tabla-container').style.display = 'none';
             document.getElementById('resumen-reporte-box').style.display = 'none';
             document.getElementById('loader-zona').style.display = 'block';
             document.getElementById('spinner-percentage').innerText = "0%";
-            document.getElementById('loader-mensaje').innerText = "Iniciando sincronización...";
+            document.getElementById('loader-mensaje').innerText = "Iniciando análisis...";
             document.getElementById('btn-errores-flotante').style.display = 'none';
             
             iniciarMonitoreoProgreso();
             
             const consola = document.getElementById('resultados');
-            consola.innerText = `⏳ Sincronizando inventario con filtro: [${idCatDefecto}]...`;
+            consola.innerText = `⏳ Analizando inventario...`;
 
             try {
                 const response = await fetch('/previsualizar', { method: 'POST', body: formData });
                 const resultado = await response.json();
 
-                // ... (tu código de arriba sigue igual hasta llegar a esto)
                 if (resultado.error) return consola.innerText = "❌ " + resultado.error;
 
                 const tbody = document.getElementById('tabla-body');
-                
-                // 🟢 1. CREAMOS UNA VARIABLE PARA GUARDAR TODO EL HTML (Super Rápido)
                 let nuevoHTML = ""; 
-                let indicesParaFotos = []; // Guardamos los IDs para pintar las fotos al final
+                let indicesParaFotos = [];
 
                 const agrupados = {};
                 resultado.productos.forEach((prod, idx) => {
@@ -1791,34 +1801,23 @@ HTML_INTERFACE = """
                             imagenesPorFila[idx].push(prod.ImagenLocal);
                         }
                         
-                        atributosPorFila[idx] = {
-                            marca: prod.Marca,
-                            modelo: prod.Modelo,
-                            color: "",
-                            compatibilidad: "",
-                            material: ""
-                        };
+                        atributosPorFila[idx] = { marca: prod.Marca, modelo: prod.Modelo, color: "", compatibilidad: "", material: "" };
                         atributosAdicionalesPorFila[idx] = {};
 
                         let gtinDisplay = (prod.GTIN && prod.GTIN !== 'N/A' && prod.GTIN !== 'OMITIR') ? 'block' : 'none';
                         let selectCustom = (prod.GTIN && prod.GTIN !== 'N/A' && prod.GTIN !== 'OMITIR') ? 'selected' : '';
                         let selectOmit = (prod.GTIN && prod.GTIN !== 'N/A' && prod.GTIN !== 'OMITIR') ? '' : 'selected';
-
                         let resumenInit = `🏷️ ${prod.Marca} / ${prod.Modelo}`;
 
                         let badgesHTML = "";
                         for (const [nomCuenta, est] of Object.entries(prod.EstadoCuentas)) {
                             badgesHTML += (est === "EXISTE") 
                                 ? `<span class="account-badge badge-existe">${nomCuenta}: Ya Publicado</span>`
-                                : `<span class="account-badge badge-libre">${nomCuenta}: Libre</span>`;
+                                : `<span class="account-badge badge-libre">${nomCuenta}: No Publicado</span>`;
                         }
 
                         const precioFormateado = parseFloat(prod.Precio || 0).toFixed(2);
-
-                        let alertaImgHTML = "";
-                        if (prod.AlertaImagen) {
-                            alertaImgHTML = `<div style="background:#fee2e2; border:1px solid #fca5a5; padding:6px; border-radius:6px; margin-bottom:6px; color:#b91c1c; font-size:11px; font-weight:bold; line-height: 1.3; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">⚠️ ${prod.AlertaImagen}</div>`;
-                        }
+                        let alertaImgHTML = prod.AlertaImagen ? `<div style="background:#fee2e2; border:1px solid #fca5a5; padding:6px; border-radius:6px; margin-bottom:6px; color:#b91c1c; font-size:11px; font-weight:bold;">⚠️ ${prod.AlertaImagen}</div>` : "";
 
                         nuevoHTML += `
                             <tr id="row-${idx}" class="item-row ${catIdClase}" data-fila="${prod.FilaExcel}">
@@ -1827,7 +1826,7 @@ HTML_INTERFACE = """
                                     <input type="text" id="tit-${idx}" value="${prod.Titulo}" maxlength="60" style="margin-bottom:4px; font-weight:bold;">
                                     <div style="display: flex; gap: 4px; align-items: center; margin-bottom: 4px;">
                                         <div id="cat-tag-label-${idx}" class="cat-tag" style="flex-grow: 1; overflow: hidden; text-overflow: ellipsis;" title="ID: ${prod.Categoria_ID}">📌 ML: ${prod.CategoriaNombre}</div>
-                                        <button type="button" onclick="abrirSelectorCategoriaManual(${idx})" style="padding: 2px 6px; font-size: 10px; background: #0284c7; border-radius: 4px; cursor: pointer; color: white;" title="Cambiar categoría manualmente">✏️ Cambiar</button>
+                                        <button type="button" onclick="abrirSelectorCategoriaManual(${idx})" style="padding: 2px 6px; font-size: 10px; background: #0284c7; border-radius: 4px; cursor: pointer; color: white;">✏️ Cambiar</button>
                                     </div>
                                     <input type="hidden" id="cat-${idx}" value="${prod.Categoria_ID}">
                                     <div id="desc-tag-${idx}" class="desc-tag">📋 Plantilla Oficial (Título x3)</div>
@@ -1868,7 +1867,6 @@ HTML_INTERFACE = """
                                     <button type="button" onclick="verDescripcion(${idx})" style="background:#475569; width:100%; padding:8px; font-size:11px; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold;">
                                         👁️ Ver Descripción Final
                                     </button>
-                                    
                                     <div id="resumen-attr-${idx}" class="attr-summary">${resumenInit}</div>
                                 </td>
                                 <td>
@@ -1881,35 +1879,32 @@ HTML_INTERFACE = """
                                 </td>
                             </tr>
                         `;
-                        indicesParaFotos.push(idx); // Guardamos para pintarlas después
+                        indicesParaFotos.push(idx);
                     });
                 }
 
-                // 🟢 2. INYECTAMOS TODO DE UN SOLO GOLPE (Evita que el navegador se congele)
                 tbody.innerHTML = nuevoHTML;
-
-                // 🟢 3. PINTAMOS LAS FOTOS AHORA QUE LA TABLA YA EXISTE
-                indicesParaFotos.forEach(idx => {
-                    renderizarGaleriaFila(idx);
-                });
+                indicesParaFotos.forEach(idx => renderizarGaleriaFila(idx));
 
                 const repBox = document.getElementById('resumen-reporte-box');
                 document.getElementById('texto-resumen-reporte').innerHTML = `
                     <b>📊 Reporte de Auditoría de Inventario:</b><br>
-                    • Se escanearon <b>${resultado.total_leidos}</b> artículos en el rango de filas seleccionado.<br>
-                    • <b>${resultado.total_aprobados}</b> artículos pasaron los filtros y están listos para ser publicados.<br>
-                    • <b style="color:#b91c1c;">${resultado.total_omitidos}</b> artículos fueron ignorados (por duplicidad, falta de título, o porque no coinciden con la categoría).<br><br>
-                    <a href="/api/descargar-reporte/${resultado.archivo_reporte}" target="_blank" style="background:#166534; color:white; padding:10px 18px; border-radius:8px; font-weight:bold; text-decoration:none; display:inline-block; transition:0.3s; margin-top:8px;">📥 Descargar Reporte Completo en Excel</a>
+                    • Se escanearon <b>${resultado.total_leidos}</b> artículos en el archivo.<br>
+                    • <b>${resultado.total_aprobados}</b> artículos listos para publicar.<br>
+                    • <b style="color:#b91c1c;">${resultado.total_omitidos}</b> artículos omitidos.<br><br>
+                    <a href="/api/descargar-reporte/${resultado.archivo_reporte}" target="_blank" style="background:#166534; color:white; padding:10px 18px; border-radius:8px; font-weight:bold; text-decoration:none; display:inline-block; margin-top:8px;">📥 Descargar Reporte Completo en Excel</a>
                 `;
                 repBox.style.display = 'block';
                 document.getElementById('tabla-container').style.display = 'block';
-                
                 consola.innerHTML = `✅ Sincronización completa. Revisa el reporte arriba.`;
+
             } catch(e) {
                 consola.innerText = "❌ Error en sincronización: " + e;
             } finally {
+                // 🟢 CIERRE GARANTIZADO DEL LOADER
                 if (intervaloProgreso) clearInterval(intervaloProgreso);
-                setTimeout(() => { document.getElementById('loader-zona').style.display = 'none'; }, 500);
+                document.getElementById('spinner-percentage').innerText = "100%";
+                setTimeout(() => { document.getElementById('loader-zona').style.display = 'none'; }, 400);
             }
         }
 
@@ -2594,12 +2589,78 @@ def endpoint_galeria_local():
                 continue
     return lista_fotos
 
+def sanitizar_atributo_por_tipo(valor_crudo, tipo_esperado, allowed_units, valid_values):
+    """Fuerza y formatea el valor devuelto por la IA para cumplir con el esquema de Mercado Libre."""
+    if valor_crudo is None or str(valor_crudo).strip().lower() in ["", "n/a", "no aplica", "nan", "null"]:
+        return None
+
+    val_str = str(valor_crudo).strip()
+
+    # 1. TIPO LISTA / MULTI-VALOR
+    if tipo_esperado == "list":
+        if isinstance(valor_crudo, list):
+            val_str = valor_crudo[0] if valor_crudo else ""
+        if valid_values:
+            for v in valid_values:
+                if v.lower() in str(val_str).lower():
+                    return v
+        return str(val_str).strip()
+
+    # 2. TIPO BOOLEAN
+    if tipo_esperado == "boolean":
+        val_lower = val_str.lower()
+        if any(t in val_lower for t in ["si", "sí", "true", "1"]):
+            return "Sí"
+        if any(f in val_lower for f in ["no", "false", "0"]):
+            return "No"
+        return "No"
+
+    # 3. TIPO NUMBER O INTEGER (Solo dígitos numéricos, sin letras ni unidades)
+    if tipo_esperado in ["number", "integer"]:
+        solo_num = re.search(r'[-+]?\d*\.?\d+', val_str.replace(',', '.'))
+        if solo_num:
+            num = float(solo_num.group(0))
+            return str(int(num)) if tipo_esperado == "integer" or num.is_integer() else str(num)
+        return None
+
+    # 4. TIPO NUMBER_UNIT (Obligatorio: [Número] [Unidad])
+    if tipo_esperado == "number_unit":
+        match = re.match(r'^([\d\.,]+)\s*([A-Za-z°/]+.*)?$', val_str)
+        if match:
+            num_parte = match.group(1).replace(',', '.')
+            unidad_parte = match.group(2).strip() if match.group(2) else ""
+            
+            # Si no trae unidad pero ML exige unidades específicas, asignamos la más idónea
+            if not unidad_parte and allowed_units:
+                unidad_parte = allowed_units[0]
+            elif unidad_parte and allowed_units:
+                for u in allowed_units:
+                    if u.lower() == unidad_parte.lower():
+                        unidad_parte = u
+                        break
+            
+            if unidad_parte:
+                return f"{num_parte} {unidad_parte}"
+            return num_parte
+        return None
+
+    # 5. TIPO STRING / TEXTO
+    if tipo_esperado == "string":
+        if valid_values:
+            for v in valid_values:
+                if v.lower() == val_str.lower():
+                    return v
+        return val_str
+
+    return val_str
+
+
 @app.post("/api/autollenar-atributos-ia")
 def autollenar_atributos_ia(
     titulo: str = Form(...),
     cat_id: str = Form(...),
     sku: str = Form(""),
-    error_previo: str = Form("") # <-- NUEVO: Recibe el error de ML
+    error_previo: str = Form("")
 ):
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
@@ -2614,74 +2675,63 @@ def autollenar_atributos_ia(
         attrs_ml = res_ml.json()
         PROHIBIDOS = {"BRAND", "MODEL", "SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES", "MEASURE_UNIT_KEY", "INVOICE_PRODUCT_NAME", "SAT_KEY"}
         
-        relevantes = []
+        mapa_esquema = {}
+        lineas_instrucciones = []
+
         for a in attrs_ml:
+            aid = a.get("id")
             tags = a.get("tags", {})
             es_read_only = tags.get("read_only", False) or tags.get("hidden", False)
-            if a.get("id") not in PROHIBIDOS and not es_read_only:
-                es_requerido = tags.get("required", False)
-                valores_validos = [v.get("name") for v in a.get("values", [])[:10]]
-                relevantes.append({
-                    "id": a.get("id"),
-                    "name": a.get("name"),
-                    "required": es_requerido,
-                    "valid_values": valores_validos
-                })
-
-        if not relevantes:
-            return {"atributos": {}, "descripcion": ""}
-
-        lista_obligatorios = []
-        for a in relevantes:
-            if a["required"]:
-                hint_vals = f" (Opciones válidas: {', '.join(a['valid_values'])})" if a['valid_values'] else ""
-                lista_obligatorios.append(f"- {a['id']} ({a['name']}){hint_vals}")
+            
+            if aid not in PROHIBIDOS and not es_read_only:
+                es_req = tags.get("required", False)
+                v_type = a.get("value_type", "string")
+                valid_vals = [v.get("name") for v in a.get("values", [])[:10]]
+                units = [u.get("name") for u in a.get("allowed_units", [])]
                 
-        lista_opcionales = []
-        for a in relevantes:
-            if not a["required"]:
-                hint_vals = f" (Opciones válidas: {', '.join(a['valid_values'])})" if a['valid_values'] else ""
-                lista_opcionales.append(f"- {a['id']} ({a['name']}){hint_vals}")
-        lista_opcionales = lista_opcionales[:12]
+                mapa_esquema[aid] = {
+                    "value_type": v_type,
+                    "allowed_units": units,
+                    "valid_values": valid_vals,
+                    "required": es_req
+                }
 
-        texto_oblig = "\n".join(lista_obligatorios) if lista_obligatorios else "Ninguno estrictamente obligatorio."
-        texto_opcio = "\n".join(lista_opcionales) if lista_opcionales else "Ninguno adicional."
+                formato_nota = f"Tipo: {v_type}"
+                if units:
+                    formato_nota += f" | Unidades válidas: [{', '.join(units[:6])}]"
+                if valid_vals:
+                    formato_nota += f" | Opciones: [{', '.join(valid_vals[:6])}]"
 
-        # Cargar memoria de aprendizaje
+                marca_req = "OBLIGATORIO" if es_req else "OPCIONAL"
+                lineas_instrucciones.append(f"- {aid} ({a.get('name')}): [{marca_req}] -> {formato_nota}")
+
+        texto_atributos = "\n".join(lineas_instrucciones[:30])
         errores_historicos = cargar_errores_ia()
         historial_texto = "\n".join([f"- {e}" for e in errores_historicos[-15:]]) if errores_historicos else "Ninguno."
 
-        prompt = f"""Eres un experto catalogador y redactor de ventas para Mercado Libre.
-Dado el siguiente producto tecnológico/electrónico:
+        prompt = f"""Eres un clasificador técnico estricto para Mercado Libre.
+Producto:
 - Título: "{titulo}"
-- SKU / Número de Parte: "{sku}"
+- SKU / Modelo: "{sku}"
 
-Tu tarea es doble:
-1. Redactar una DESCRIPCIÓN COMERCIAL atractiva, persuasiva y detallada (aprox. 2 párrafos) que resalte los beneficios y usos del producto.
-2. Extraer o deducir los atributos técnicos de Mercado Libre basándote en el Título, SKU y tu descripción.
+Instrucciones:
+1. Genera una DESCRIPCIÓN COMERCIAL atractiva (clave "DESCRIPCION_COMERCIAL").
+2. Genera los atributos técnicos respetando rigurosamente el tipo de dato y las unidades permitidas:
+{texto_atributos}
 
-Atributos OBLIGATORIOS (DEBES incluirlos en el JSON):
-{texto_oblig}
+REGLAS DE TIPOS DE DATO:
+- Si el tipo es 'number' o 'integer', responde ÚNICAMENTE el valor numérico, SIN texto ni letras (ej: 8, no '8 GB').
+- Si el tipo es 'number_unit', debes incluir OBLIGATORIAMENTE el número y una de las unidades válidas (ej: '1200 W', '1000 Mbps').
+- Si el tipo es 'boolean', responde 'Sí' o 'No'.
+- Prohibido inventar datos si no se conocen o deducen del título/SKU (omite la clave opcional en ese caso).
+- Prohibido responder 'N/A' o 'No Aplica'.
 
-Atributos OPCIONALES (inclúyelos SOLO si tienes información exacta):
-{texto_opcio}
-
-HISTORIAL DE ERRORES A EVITAR (Aprende de esto y NO los cometas):
+HISTORIAL DE RECHAZOS DE MERCADO LIBRE (NO REPETIR ESTOS FALLOS):
 {historial_texto}
-
-Reglas estrictas e inquebrantables:
-1. Responde SOLO con un JSON válido. NADA de texto adicional.
-2. El JSON debe contener la clave exacta "DESCRIPCION_COMERCIAL".
-3. Las demás claves deben ser EXACTAMENTE el ID del atributo técnico.
-4. OBLIGATORIOS: ¡Nunca vacíos! Si no sabes el dato, usa "Genérico", "Universal" o "Estándar". (PROHIBIDO USAR "N/A" o "No Aplica").
-5. OPCIONALES: Si no tienes el dato, SIMPLEMENTE OMÍTELO DEL JSON.
-6. OPCIONES VÁLIDAS: Si hay opciones dadas, debes elegir EXACTAMENTE una de ellas.
-7. REGLA DE ORO PARA MEDIDAS: Todo atributo numérico (capacidad, tamaño, frecuencia) DEBE INCLUIR LA UNIDAD DE MEDIDA (ej. "8 GB", "15.6 pulgadas", "144 Hz").
 """
-        # Si viene un error previo de este artículo, inyectarlo como directriz urgente
         if error_previo:
             guardar_error_ia(error_previo)
-            prompt += f"\n¡URGENTE! Tu intento anterior para este artículo fue RECHAZADO por este error exacto:\n'{error_previo}'\nDEBES corregir ese atributo o cambiar su formato para cumplir con Mercado Libre.\n"
+            prompt += f"\n¡CORRECCIÓN INMEDIATA! El intento anterior falló por: '{error_previo}'. Ajusta el tipo de dato y la unidad."
 
         headers_or = {
             "Authorization": f"Bearer {api_key}",
@@ -2693,10 +2743,10 @@ Reglas estrictas e inquebrantables:
         payload_or = {
             "model": "deepseek/deepseek-chat",
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.1
+            "temperature": 0.0
         }
 
-        url_openrouter = "https://" + "openrouter.ai/api/v1/chat/completions"
+        url_openrouter = "https://openrouter.ai/api/v1/chat/completions"
         res_or = requests.post(url_openrouter, headers=headers_or, json=payload_or, timeout=60)
         
         if res_or.status_code != 200:
@@ -2704,20 +2754,32 @@ Reglas estrictas e inquebrantables:
 
         raw_text = res_or.json()["choices"][0]["message"]["content"].strip()
         
-        if raw_text.startswith("```json"):
-            raw_text = raw_text.replace("```json", "").replace("```", "").strip()
-        elif raw_text.startswith("```"):
-            raw_text = raw_text.replace("```", "").strip()
+        # 🟢 FILTRO DE RAYOS X: Extrae solo el JSON e ignora el texto basura
+        json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+        if not json_match:
+            return {"error": "La IA no devolvió un JSON válido. Reintenta."}
 
-        datos_ia = json.loads(raw_text)
+        try:
+            datos_ia = json.loads(json_match.group(0))
+        except Exception:
+            return {"error": "El formato devuelto por la IA estaba corrupto."}
+
         descripcion_ia = datos_ia.pop("DESCRIPCION_COMERCIAL", "")
 
-        ids_validos = {a["id"] for a in relevantes}
+        # Coerción y validación final de tipos en Python
         atributos_finales = {}
         for k, v in datos_ia.items():
             k_upper = str(k).strip().upper()
-            if k_upper in ids_validos and v and str(v).strip() != "":
-                atributos_finales[k_upper] = str(v).strip()
+            if k_upper in mapa_esquema:
+                cfg = mapa_esquema[k_upper]
+                val_sanitizado = sanitizar_atributo_por_tipo(
+                    v, 
+                    cfg["value_type"], 
+                    cfg["allowed_units"], 
+                    cfg["valid_values"]
+                )
+                if val_sanitizado is not None and str(val_sanitizado).strip() != "":
+                    atributos_finales[k_upper] = str(val_sanitizado).strip()
 
         return {"atributos": atributos_finales, "descripcion": descripcion_ia}
 
@@ -2755,13 +2817,18 @@ def verificar_tokens_endpoint():
     return {"logs": logs}
 
 @app.post("/api/sincronizar-memoria-ml")
-def api_sincronizar_memoria():
+def api_sincronizar_memoria(cuenta: str = Form("TODAS")):
     global PROGRESO_ACTUAL
     PROGRESO_ACTUAL["activo"] = True
     PROGRESO_ACTUAL["porcentaje"] = 0
     PROGRESO_ACTUAL["mensaje"] = "Iniciando sincronización..."
     
-    archivos = listar_archivos_token()
+    # 🟢 AHORA SÍ FILTRA POR LA CUENTA QUE ENVÍA EL NAVEGADOR
+    if cuenta == "TODAS":
+        archivos = listar_archivos_token()
+    else:
+        archivos = [cuenta]
+        
     memoria = cargar_memoria()
     total_nuevos = 0
     
@@ -2770,9 +2837,11 @@ def api_sincronizar_memoria():
         token = obtener_token(arch)
         if not token: 
             continue
+            
+        # 🟢 RESETEA EL PORCENTAJE A 0 CUANDO INICIA UNA CUENTA NUEVA
+        actualizar_progreso(0, f"Preparando cuenta: {nombre_c}...")
         
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        # Le enviamos el nombre para que lo muestre en pantalla
         inv_ml = obtener_inventario_ml(headers, nombre_c)
         
         if nombre_c not in memoria:
@@ -2792,7 +2861,9 @@ def api_sincronizar_memoria():
     with open(ARCHIVO_MEMORIA, "w", encoding="utf-8") as f:
         json.dump(memoria, f, ensure_ascii=False, indent=4)
         
+    actualizar_progreso(100, "¡Sincronización completada!")
     PROGRESO_ACTUAL["activo"] = False
+    
     return {"mensaje": f"Sincronización finalizada. Se guardaron {total_nuevos} datos nuevos en la memoria local."}
 
 
@@ -2834,6 +2905,7 @@ def previsualizar_archivo(
     cantidad_limite: int = Form(0), 
     categoria_filtro: str = Form("TODAS"),
     filtrar_duplicados: str = Form("true"),
+    verificar_todas: str = Form("false"), # 🟢 Parámetro nuevo recibido del formulario
     col_tit: str = Form(""),
     col_sku: str = Form(""),
     col_mod: str = Form(""),
@@ -2846,11 +2918,16 @@ def previsualizar_archivo(
     with open(temp_filename, "wb") as buffer: 
         buffer.write(file.file.read())
 
-    archivos_a_escanear = listar_archivos_token()
-    inventario_por_cuenta = {}
+    # 🟢 DETERMINAR QUÉ CUENTAS ESCANEAR
+    if cuenta == "TODAS" or verificar_todas.lower() == "true":
+        archivos_a_escanear = listar_archivos_token()
+    else:
+        archivos_a_escanear = [cuenta]
 
-    actualizar_progreso(15, "Cargando memoria local ultra-rápida...")
+    inventario_por_cuenta = {}
+    actualizar_progreso(15, "Cargando inventario de cuenta(s) seleccionada(s)...")
     memoria_local = cargar_memoria()
+    
     for arch in archivos_a_escanear:
         nombre_c = obtener_nombre_cuenta(arch)
         if nombre_c in memoria_local:
@@ -2878,7 +2955,6 @@ def previsualizar_archivo(
         return {"error": f"Error heurístico leyendo el archivo: {str(e)}"}
 
     idx_inicio = max(0, inicio - 1)
-    # 🟢 ACELERADOR: Si hay un límite, tomamos TODO el excel desde el inicio. El escáner saltará rápido.
     if cantidad_limite > 0:
         filas_rango = filas_procesadas[idx_inicio:]
     else:
@@ -2899,7 +2975,6 @@ def previsualizar_archivo(
         titulos_activos_globales.update(inv['titulos'])
         skus_activos_globales.update(inv['skus'])
 
-    # 🟢 MAPEO RÁPIDO GLOBAL
     for idx_g, item_g in enumerate(filas_procesadas):
         titulo_norm_g = str(item_g.get("Titulo", "")).strip().lower()
         sku_raw_g = str(item_g.get("SKU", "")).strip().lower()
@@ -2933,7 +3008,6 @@ def previsualizar_archivo(
         existe_en_seleccionada = False
         nombre_seleccionada = obtener_nombre_cuenta(cuenta) if cuenta != "TODAS" else "TODAS"
 
-        # 🟢 VERIFICACIÓN ULTRA RÁPIDA (Filtro temprano)
         for nom_c, inv in inventario_por_cuenta.items():
             existe = (sku_raw and sku_raw not in ["nan", "omitir", "n/a", "null"] and sku_raw in inv['skus'])
             if not existe:
@@ -2954,28 +3028,26 @@ def previsualizar_archivo(
         else:
             motivo_estado = "✅ Aprobado (Listo para Publicar)"
             if filtrar_duplicados == "true":
-                if cuenta == "TODAS" and existe_en_todas:
-                    motivo_estado = "🚫 Omitido (Ya publicado en todas las cuentas)"
+                # Si validamos contra todas las cuentas
+                if (cuenta == "TODAS" or verificar_todas.lower() == "true") and any(est == "EXISTE" for est in estado_cuentas.values()):
+                    motivo_estado = "🚫 Omitido (Ya publicado en alguna cuenta registrada)"
+                # Si solo validamos contra la cuenta elegida
                 elif cuenta != "TODAS" and existe_en_seleccionada:
-                    motivo_estado = "🚫 Omitido (Ya publicado en la cuenta destino)"
-                elif cuenta == "TODAS" and any(est == "EXISTE" for est in estado_cuentas.values()):
-                    motivo_estado = "🚫 Omitido (Ya publicado en al menos una cuenta)"
+                    motivo_estado = f"🚫 Omitido (Ya publicado en {nombre_seleccionada})"
 
-        # 🟢 EL SALTO: Si es omitido, pasamos a la siguiente celda INMEDIATAMENTE sin consultar a Mercado Libre.
         if "🚫" in motivo_estado:
             omitidos_count += 1
             if filtrar_duplicados == "true":
-                if cantidad_limite > 0 and indice % 5 == 0: # Actualizamos la barra cada 5 para no saturar visualmente
+                if cantidad_limite > 0 and indice % 5 == 0:
                     pct = int(20 + (aprobados_count / max(1, cantidad_limite)) * 75)
                     actualizar_progreso(pct, f"[{aprobados_count}/{cantidad_limite}] Saltando publicados... (Fila {idx_inicio + indice + 2})")
                 continue
 
-        # Si llegó aquí, es un artículo LIBRE. Ahora sí gastamos tiempo en consultar ML y buscar fotos.
         aprobados_count += 1
         
         if cantidad_limite > 0:
             porcentaje_actual = int(20 + (aprobados_count / max(1, cantidad_limite)) * 75)
-            mensaje_progreso = f"[{aprobados_count}/{cantidad_limite}] Procesando nuevo: {titulo[:30]}..."
+            mensaje_progreso = f"[{aprobados_count}/{cantidad_limite}] Procesando: {titulo[:30]}..."
         else:
             porcentaje_actual = int(20 + ((indice + 1) / max(1, total_filas)) * 75)
             mensaje_progreso = f"[{indice+1}/{total_filas}] Sincronizando: {titulo[:30]}..."
@@ -2992,7 +3064,6 @@ def previsualizar_archivo(
         cat_origen = item.get("CategoriaOrigen", "")
         nom_hoja = item.get("Hoja", "")
 
-        # Adivinamos categoría solo para los que pasaron el filtro
         if headers_ref and titulo:
             if titulo in cache_categorias_adivinadas:
                 cat_id, cat_nombre = cache_categorias_adivinadas[titulo]
@@ -3004,7 +3075,7 @@ def previsualizar_archivo(
 
         if not coincide_con_categoria_elegida(titulo, cat_id, categoria_filtro):
             motivo_estado = f"🚫 Omitido (No coincide con la categoría filtro: {categoria_filtro})"
-            aprobados_count -= 1 # Lo restamos porque lo rechazó el filtro de categoría
+            aprobados_count -= 1
             continue
         
         fila_completa = item.copy()
@@ -3034,6 +3105,8 @@ def previsualizar_archivo(
         "procesados": reporte_procesados
     }
 
+    # 🟢 FORZAR 100% Y DESACTIVAR PROGRESO AL TERMINAR
+    actualizar_progreso(100, "¡Análisis de inventario completado!")
     PROGRESO_ACTUAL["activo"] = False
     
     return {
