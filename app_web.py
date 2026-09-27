@@ -28,10 +28,11 @@ def cargar_errores_ia():
 
 def guardar_error_ia(nuevo_error):
     errores = cargar_errores_ia()
-    if nuevo_error not in errores:
-        errores.append(nuevo_error)
-        with open(ARCHIVO_ERRORES_IA, "w", encoding="utf-8") as f:
-            json.dump(errores, f, ensure_ascii=False, indent=4)
+    if nuevo_error in errores:
+        errores.remove(nuevo_error) # Lo quitamos de su posición vieja
+    errores.append(nuevo_error)     # Lo ponemos al final como el MÁS RECIENTE
+    with open(ARCHIVO_ERRORES_IA, "w", encoding="utf-8") as f:
+        json.dump(errores, f, ensure_ascii=False, indent=4)
 ULTIMO_REPORTE = [] # <-- NUEVA VARIABLE GLOBAL AÑADIDA AQUI
 
 PROGRESO_ACTUAL = {
@@ -268,14 +269,14 @@ def construir_atributos_dinamicos_dict(prod, attr_adicionales, headers):
             if k_id_upper not in PROHIBIDOS and str(v_val).strip() != "":
                 val_str = str(v_val).strip()
                 
-                # Detectamos si es un número acompañado de una unidad (Ej: "1200 W")
-                match = re.match(r'^([\d\.,]+)\s+([A-Za-z].*)$', val_str)
-                if match:
+                # Acepta cualquier símbolo como unidad, no solo letras
+                match = re.match(r'^([\d\.,]+)\s*(.*)$', val_str)
+                if match and match.group(2).strip(): 
                     num_str = match.group(1).replace(',', '.')
                     unidad_str = match.group(2).strip()
                     try:
                         num_float = float(num_str)
-                        # Le enviamos a ML la estructura EXACTA para que no bloquee la publicación
+                        # Le enviamos a ML la estructura EXACTA para que no bloquee
                         lista.append({
                             "id": k_id_upper,
                             "value_name": val_str,
@@ -1384,7 +1385,7 @@ HTML_INTERFACE = """
                         
                         unitsList.forEach(u => {
                             let sel = (u.toLowerCase() === savedUnit.toLowerCase()) ? "selected" : "";
-                            unitOptions += `<option value="${u}" ${sel}>${u}</option>`;
+                            unitOptions += `<option value='${u}' ${sel}>${u}</option>`;
                         });
 
                         controlHTML = `
@@ -2625,24 +2626,30 @@ def sanitizar_atributo_por_tipo(valor_crudo, tipo_esperado, allowed_units, valid
 
     # 4. TIPO NUMBER_UNIT (Obligatorio: [Número] [Unidad])
     if tipo_esperado == "number_unit":
-        match = re.match(r'^([\d\.,]+)\s*([A-Za-z°/]+.*)?$', val_str)
+        match = re.match(r'^([\d\.,]+)\s*(.*)$', val_str)
         if match:
             num_parte = match.group(1).replace(',', '.')
             unidad_parte = match.group(2).strip() if match.group(2) else ""
             
-            # Si no trae unidad pero ML exige unidades específicas, asignamos la más idónea
-            if not unidad_parte and allowed_units:
-                unidad_parte = allowed_units[0]
-            elif unidad_parte and allowed_units:
-                for u in allowed_units:
-                    if u.lower() == unidad_parte.lower():
-                        unidad_parte = u
-                        break
+            # 🟢 Rescate Extremo: Si la IA manda un número pero olvidó la unidad
+            if allowed_units:
+                if not unidad_parte:
+                    unidad_parte = allowed_units[0]
+                else:
+                    # Intenta mapear si la IA inventó una unidad parecida
+                    unidad_encontrada = False
+                    for u in allowed_units:
+                        if u.lower() == unidad_parte.lower() or unidad_parte.lower() in u.lower() or u.lower() in unidad_parte.lower():
+                            unidad_parte = u
+                            unidad_encontrada = True
+                            break
+                    # Si mandó una unidad que ML no acepta (ej: "pulgadas" en vez de '"'), forzamos la oficial
+                    if not unidad_encontrada:
+                        unidad_parte = allowed_units[0]
             
             if unidad_parte:
                 return f"{num_parte} {unidad_parte}"
             return num_parte
-        return None
 
     # 5. TIPO STRING / TEXTO
     if tipo_esperado == "string":
@@ -2676,10 +2683,12 @@ def autollenar_atributos_ia(
         PROHIBIDOS = {"BRAND", "MODEL", "SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES", "MEASURE_UNIT_KEY", "INVOICE_PRODUCT_NAME", "SAT_KEY"}
         
         mapa_esquema = {}
+        mapa_nombres_espanol = {} # 🟢 NUEVO: Diccionario salvavidas
         lineas_instrucciones = []
 
         for a in attrs_ml:
             aid = a.get("id")
+            nombre_esp = a.get("name", "").strip().upper()
             tags = a.get("tags", {})
             es_read_only = tags.get("read_only", False) or tags.get("hidden", False)
             
@@ -2695,43 +2704,50 @@ def autollenar_atributos_ia(
                     "valid_values": valid_vals,
                     "required": es_req
                 }
+                
+                # 🟢 Guardamos la traducción por si la IA usa el nombre en español
+                mapa_nombres_espanol[nombre_esp] = aid 
 
                 formato_nota = f"Tipo: {v_type}"
                 if units:
-                    formato_nota += f" | Unidades válidas: [{', '.join(units[:6])}]"
+                    formato_nota += f" | Unidades válidas: [{', '.join(units[:10])}]"
                 if valid_vals:
-                    formato_nota += f" | Opciones: [{', '.join(valid_vals[:6])}]"
+                    formato_nota += f" | Opciones: [{', '.join(valid_vals[:10])}]"
 
                 marca_req = "OBLIGATORIO" if es_req else "OPCIONAL"
-                lineas_instrucciones.append(f"- {aid} ({a.get('name')}): [{marca_req}] -> {formato_nota}")
+                # 🟢 Forzamos visualmente el formato de la clave en el prompt
+                lineas_instrucciones.append(f'  "{aid}": "..."  // ({a.get("name")}) [{marca_req}] -> {formato_nota}')
 
-        texto_atributos = "\n".join(lineas_instrucciones[:30])
+        texto_atributos = "\n".join(lineas_instrucciones[:40])
         errores_historicos = cargar_errores_ia()
-        historial_texto = "\n".join([f"- {e}" for e in errores_historicos[-15:]]) if errores_historicos else "Ninguno."
+        historial_texto = "\n".join([f"- {e}" for e in errores_historicos[-30:]]) if errores_historicos else "Ninguno."
 
-        prompt = f"""Eres un clasificador técnico estricto para Mercado Libre.
-Producto:
+        prompt = f"""Eres un catalogador técnico experto para Mercado Libre.
+Analiza este producto:
 - Título: "{titulo}"
 - SKU / Modelo: "{sku}"
 
-Instrucciones:
-1. Genera una DESCRIPCIÓN COMERCIAL atractiva (clave "DESCRIPCION_COMERCIAL").
-2. Genera los atributos técnicos respetando rigurosamente el tipo de dato y las unidades permitidas:
+Tu tarea es devolver ÚNICAMENTE un objeto JSON válido. NO devuelvas texto extra ni formato markdown.
+
+REGLAS ESTRICTAS DE CLAVES JSON:
+- Usa EXACTAMENTE las claves en mayúsculas de la izquierda (Ej: usa "DISPLAY_SIZE", NO "Tamaño de la pantalla").
+- La primera clave debe ser "DESCRIPCION_COMERCIAL": "Descripción atractiva aquí".
+
+REGLAS DE VALORES:
+- TIPO 'number_unit': DEBES devolver un string combinando número y unidad separados por espacio (Ej: "15.6 \"", "1 TB", "8 GB").
+- ATRIBUTOS [OBLIGATORIO]: NUNCA los dejes vacíos. Haz tu mejor esfuerzo por deducirlo del título. Si es de PC/Laptop y no indica pantalla, asume "15.6 \"". Si no indica RAM asume "8 GB", etc. Nunca devuelvas un campo vacío en obligatorios.
+
+ESQUEMA DE ATRIBUTOS PERMITIDOS (Las claves exactas de tu JSON deben ser estas):
+{{
 {texto_atributos}
+}}
 
-REGLAS DE TIPOS DE DATO:
-- Si el tipo es 'number' o 'integer', responde ÚNICAMENTE el valor numérico, SIN texto ni letras (ej: 8, no '8 GB').
-- Si el tipo es 'number_unit', debes incluir OBLIGATORIAMENTE el número y una de las unidades válidas (ej: '1200 W', '1000 Mbps').
-- Si el tipo es 'boolean', responde 'Sí' o 'No'.
-- Prohibido inventar datos si no se conocen o deducen del título/SKU (omite la clave opcional en ese caso).
-- Prohibido responder 'N/A' o 'No Aplica'.
-
-HISTORIAL DE RECHAZOS DE MERCADO LIBRE (NO REPETIR ESTOS FALLOS):
+HISTORIAL DE RECHAZOS (APRENDE DE ESTOS FALLOS):
 {historial_texto}
 """
         if error_previo:
             guardar_error_ia(error_previo)
-            prompt += f"\n¡CORRECCIÓN INMEDIATA! El intento anterior falló por: '{error_previo}'. Ajusta el tipo de dato y la unidad."
+            prompt += f"\n\n¡ALERTA DE CORRECCIÓN!: El intento anterior falló por este error de Mercado Libre: '{error_previo}'. Corrige el número o la unidad para solucionar esto."
 
         headers_or = {
             "Authorization": f"Bearer {api_key}",
@@ -2754,7 +2770,6 @@ HISTORIAL DE RECHAZOS DE MERCADO LIBRE (NO REPETIR ESTOS FALLOS):
 
         raw_text = res_or.json()["choices"][0]["message"]["content"].strip()
         
-        # 🟢 FILTRO DE RAYOS X: Extrae solo el JSON e ignora el texto basura
         json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
         if not json_match:
             return {"error": "La IA no devolvió un JSON válido. Reintenta."}
@@ -2766,10 +2781,14 @@ HISTORIAL DE RECHAZOS DE MERCADO LIBRE (NO REPETIR ESTOS FALLOS):
 
         descripcion_ia = datos_ia.pop("DESCRIPCION_COMERCIAL", "")
 
-        # Coerción y validación final de tipos en Python
         atributos_finales = {}
         for k, v in datos_ia.items():
             k_upper = str(k).strip().upper()
+            
+            # 🟢 EL SALVAVIDAS: Si la IA desobedeció y usó el nombre en español, lo traducimos al ID en inglés
+            if k_upper not in mapa_esquema and k_upper in mapa_nombres_espanol:
+                k_upper = mapa_nombres_espanol[k_upper]
+
             if k_upper in mapa_esquema:
                 cfg = mapa_esquema[k_upper]
                 val_sanitizado = sanitizar_atributo_por_tipo(
@@ -3028,10 +3047,13 @@ def previsualizar_archivo(
         else:
             motivo_estado = "✅ Aprobado (Listo para Publicar)"
             if filtrar_duplicados == "true":
-                # Si validamos contra todas las cuentas
-                if (cuenta == "TODAS" or verificar_todas.lower() == "true") and any(est == "EXISTE" for est in estado_cuentas.values()):
-                    motivo_estado = "🚫 Omitido (Ya publicado en alguna cuenta registrada)"
-                # Si solo validamos contra la cuenta elegida
+                # 🟢 NUEVA LÓGICA: Ocultar SOLO si está publicado en TODAS las cuentas seleccionadas
+                if (cuenta == "TODAS" or verificar_todas.lower() == "true"):
+                    # Cambiamos 'any' por 'all'. Solo lo omite si TODOS dicen "EXISTE".
+                    if all(est == "EXISTE" for est in estado_cuentas.values()):
+                        motivo_estado = "🚫 Omitido (Ya publicado en TODAS las cuentas registradas)"
+                
+                # Si solo validamos contra la cuenta elegida individualmente
                 elif cuenta != "TODAS" and existe_en_seleccionada:
                     motivo_estado = f"🚫 Omitido (Ya publicado en {nombre_seleccionada})"
 

@@ -1,9 +1,8 @@
 [
-    "⚠️ The category MLV1656 requires a minimum of price 2",
-    "⚠️ \"Unidades por pack\": Completa este campo porque completaste \"Unidad\" en el campo \"Formato de venta\". | ⚠️ Atributo [UNITS_PER_PACK] to be added with values [(null,1)] | ⚠️ The category MLV3561 requires a minimum of price 2",
-    "⚠️ El valor que ingresaste en \"Cantidad de antenas internas\" es incorrecto. | ⚠️ \"Unidades por pack\": Ingresa un valor diferente a \"2 routers\" porque completaste \"Pack\" en el campo \"Formato de venta\". | ⚠️ El valor que ingresaste en \"Unidades por pack\" es incorrecto.",
-    "📏 Falta unidad de medida válida (ej: 'Mbps', 'W') en: PEAK_POWER. Deja un espacio entre número y unidad. | ⚠️ El valor que ingresaste en \"Potencia pico\" es incorrecto.",
-    "⚠️ El valor que ingresaste en \"Unidades por pack\" es incorrecto. | ⚠️ El valor que ingresaste en \"Velocidad inalámbrica\" es incorrecto. | 📏 Falta unidad de medida válida (ej: 'Mbps', 'W') en: WIRELESS_SPEED. Deja un espacio entre número y unidad. | ⚠️ El valor que ingresaste en \"Cantidad de antenas ",
-    "📏 Falta unidad de medida (GB, pulgadas, Hz, etc) en: PEAK_POWER.",
-    "📏 Falta unidad de medida (GB, pulgadas, Hz, etc) en: PEAK_POWER. | ⚠️ El valor que ingresaste en \"Potencia pico\" es incorrecto."
+    "⚠️ El valor que ingresaste en \"Capacidad de almacenamiento de datos\" es incorrecto. | 📏 Falta unidad de medida (GB, pulgadas, Hz, etc) en: DATA_STORAGE_CAPACITY.",
+    "📏 Falta unidad de medida (GB, pulgadas, Hz, etc) en: SSD_DATA_STORAGE_CAPACITY. | 📏 Falta unidad de medida (GB, pulgadas, Hz, etc) en: RAM_MEMORY_MODULE_TOTAL_CAPACITY. | ⚠️ El campo \"Tamaño de la pantalla\" es obligatorio y no está cargado. | ⚠️ El valor que ingresaste en \"Capacidad del disco rígido",
+    "⚠️ El campo \"Tamaño de la pantalla\" es obligatorio y no está cargado. | ⚠️ Catalog has not mode me1 | ⚠️ User has not mode me1 | ⚠️ The attributes [DISPLAY_SIZE] are required for category MLV1652 and channel marketplace. Check the attribute is present in the attributes list or in all variation's att",
+    "⚠️ El campo \"Capacidad\" es obligatorio y no está cargado. | ⚠️ Catalog has not mode me1 | ⚠️ User has not mode me1 | ⚠️ The attributes [CAPACITY] are required for category MLV1672 and channel marketplace. Check the attribute is present in the attributes list or in all variation's attributes_combinat",
+    "📏 Falta unidad de medida (GB, pulgadas, Hz, etc) en: SSD_MAX_READ_SPEED. | 📏 Falta unidad de medida (GB, pulgadas, Hz, etc) en: CAPACITY. | 📏 Falta unidad de medida (GB, pulgadas, Hz, etc) en: MEMORY_RESISTANCE. | 📏 Falta unidad de medida (GB, pulgadas, Hz, etc) en: SSD_MAX_WRITE_SPEED.",
+    "⚠️ The attributes [DISPLAY_SIZE] are required for category MLV1652 and channel marketplace. Check the attribute is present in the attributes list or in all variation's attributes_combination or attributes. | ⚠️ User has not mode me1 | ⚠️ El campo \"Tamaño de la pantalla\" es obligatorio y no está carg"
 ]

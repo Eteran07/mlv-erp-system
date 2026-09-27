@@ -18,3 +18,17 @@ tokens_*.json
 dist/
 build/
 *.spec
+
+# Bases de datos de memoria y aprendizaje local
+memoria_erp.json
+memoria_errores_ia.json
+
+# Carpetas de procesamiento de archivos
+lote_imagenes/
+reportes/
+catalogos_generados/
+
+# Entornos virtuales y caché de Python (Recomendado)
+__pycache__/
+*.pyc
+.env
