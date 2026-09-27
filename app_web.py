@@ -266,7 +266,29 @@ def construir_atributos_dinamicos_dict(prod, attr_adicionales, headers):
         for k_id, v_val in attr_adicionales.items():
             k_id_upper = str(k_id).strip().upper()
             if k_id_upper not in PROHIBIDOS and str(v_val).strip() != "":
-                lista.append({"id": k_id_upper, "value_name": str(v_val).strip()})
+                val_str = str(v_val).strip()
+                
+                # Detectamos si es un número acompañado de una unidad (Ej: "1200 W")
+                match = re.match(r'^([\d\.,]+)\s+([A-Za-z].*)$', val_str)
+                if match:
+                    num_str = match.group(1).replace(',', '.')
+                    unidad_str = match.group(2).strip()
+                    try:
+                        num_float = float(num_str)
+                        # Le enviamos a ML la estructura EXACTA para que no bloquee la publicación
+                        lista.append({
+                            "id": k_id_upper,
+                            "value_name": val_str,
+                            "value_struct": {
+                                "number": num_float,
+                                "unit": unidad_str
+                            }
+                        })
+                        continue
+                    except ValueError:
+                        pass
+                
+                lista.append({"id": k_id_upper, "value_name": val_str})
     return lista
 
 def obtener_inventario_ml(headers, nombre_perfil="Cuenta"):
@@ -1328,25 +1350,55 @@ HTML_INTERFACE = """
                     const vGuardado = obtenerValorGuardado(att, attrAdic, attrBase);
                     let controlHTML = "";
 
-                    if (att.values && att.values.length > 0) {
+                    // 🟢 NUEVA LÓGICA: Si es number_unit, creamos dos campos
+                    if (att.value_type === "number_unit") {
+                        let savedNum = "";
+                        let savedUnit = "";
+                        if (vGuardado) {
+                            let match = String(vGuardado).match(/^([\d\.,]+)\s*(.*)$/);
+                            if (match) {
+                                savedNum = match[1];
+                                savedUnit = match[2].trim();
+                            } else {
+                                savedNum = vGuardado;
+                            }
+                        }
+                        
+                        let unitOptions = "";
+                        let unitsList = (att.allowed_units && att.allowed_units.length > 0) ? att.allowed_units : ['W', 'VA', 'V', 'Hz', 'GB', 'MB', 'TB', 'pulgadas', 'cm', 'mm', 'kg', 'g', 'Mbps', 'rpm', 'mAh'];
+                        
+                        unitsList.forEach(u => {
+                            let sel = (u.toLowerCase() === savedUnit.toLowerCase()) ? "selected" : "";
+                            unitOptions += `<option value="${u}" ${sel}>${u}</option>`;
+                        });
+
+                        controlHTML = `
+                            <div style="display: flex; gap: 5px;">
+                                <input type="number" step="any" id="m-num-${att.id}" value="${savedNum}" placeholder="Número (Ej: 1200)" style="flex: 2; border-color: #0284c7;">
+                                <select id="m-unit-${att.id}" style="flex: 1; border-color: #0284c7;">
+                                    <option value="">Unidad</option>
+                                    ${unitOptions}
+                                </select>
+                                <input type="hidden" id="m-txt-${att.id}" value="${vGuardado}">
+                            </div>
+                        `;
+                    } 
+                    // Lógica normal para listas
+                    else if (att.values && att.values.length > 0) {
                         let optionsHTML = "";
                         att.values.forEach(valML => {
                             optionsHTML += `<option value="${valML.name}">`;
                         });
-
                         controlHTML = `
                             <input type="text" list="dl-${att.id}" id="m-txt-${att.id}" value="${vGuardado}" placeholder="Elige de la lista o escribe una opción libre...">
                             <datalist id="dl-${att.id}">
                                 ${optionsHTML}
                             </datalist>
                         `;
-                    } else {
-                        // 🟢 SOLUCIÓN NUMBER_UNIT: Aviso visual para campos que requieren unidad
-                        if (att.value_type === "number_unit") {
-                            controlHTML = `<input type="text" id="m-txt-${att.id}" value="${vGuardado}" placeholder="¡Requiere unidad! (Ej: ${att.hint || '1200 Mbps, 5 GHz, 110V'})" style="border-left: 4px solid #f59e0b;">`;
-                        } else {
-                            controlHTML = `<input type="text" id="m-txt-${att.id}" value="${vGuardado}" placeholder="Ej: ${att.hint || 'Valor'}">`;
-                        }
+                    } 
+                    // Lógica normal para texto
+                    else {
+                        controlHTML = `<input type="text" id="m-txt-${att.id}" value="${vGuardado}" placeholder="Ej: ${att.hint || 'Valor'}">`;
                     }
 
                     const isReq = att.required;
@@ -1413,6 +1465,23 @@ HTML_INTERFACE = """
             if (!atributosAdicionalesPorFila[idx]) atributosAdicionalesPorFila[idx] = {};
             
             const contenedor = document.getElementById('modal-attr-dinamicos');
+            
+            // 🟢 ENSAMBLAMOS PRIMERO LOS CAMPOS DUALES (Number + Unit)
+            contenedor.querySelectorAll('input[id^="m-num-"]').forEach(numInp => {
+                const idAttrML = numInp.id.replace('m-num-', '');
+                const unitSel = document.getElementById('m-unit-' + idAttrML);
+                const hiddenTxt = document.getElementById('m-txt-' + idAttrML);
+                
+                if (numInp.value.trim() !== "" && unitSel.value.trim() !== "") {
+                    hiddenTxt.value = numInp.value.trim() + " " + unitSel.value.trim();
+                } else if (numInp.value.trim() !== "") {
+                    hiddenTxt.value = numInp.value.trim(); 
+                } else {
+                    hiddenTxt.value = "";
+                }
+            });
+
+            // 🟢 AHORA SÍ GUARDAMOS TODOS LOS ATRIBUTOS
             contenedor.querySelectorAll('input[id^="m-txt-"]').forEach(inp => {
                 const idAttrML = inp.id.replace('m-txt-', '').toUpperCase();
                 if (inp.value.trim() !== "") {
