@@ -108,7 +108,7 @@ De 8:30am A 5:30pm
 def cargar_memoria():
     if os.path.exists(ARCHIVO_MEMORIA):
         try:
-            with open(ARCHIVO_MEMORIA, "r") as f:
+            with open(ARCHIVO_MEMORIA, "r", encoding="utf-8") as f:
                 return json.load(f)
         except:
             pass
@@ -122,8 +122,8 @@ def guardar_en_memoria(cuenta, titulo, sku):
         mem[cuenta]['titulos'].append(titulo)
     if sku and sku not in mem[cuenta]['skus']:
         mem[cuenta]['skus'].append(sku)
-    with open(ARCHIVO_MEMORIA, "w") as f:
-        json.dump(mem, f)
+    with open(ARCHIVO_MEMORIA, "w", encoding="utf-8") as f:
+        json.dump(mem, f, ensure_ascii=False, indent=4)
 
 def actualizar_progreso(porcentaje: int, mensaje: str):
     PROGRESO_ACTUAL["porcentaje"] = porcentaje
@@ -571,12 +571,19 @@ HTML_INTERFACE = """
                 </div>
 
                 <div style="margin-bottom: 25px; display: flex; gap: 10px;">
-                    <button onclick="sincronizarMemoriaML()" style="width: 50%; padding: 14px; font-size: 15px; background: #8b5cf6; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">
-                        📥 1. Sincronizar Memoria con ML
+                    <button onclick="sincronizarMemoriaML()" style="width: 33%; padding: 14px; font-size: 13px; background: #8b5cf6; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">
+                        📥 1. Sincronizar Memoria ML
                     </button>
-                    <button onclick="abrirModalCategorias()" style="width: 50%; padding: 14px; font-size: 15px; background: #0284c7; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">
+                    <button onclick="abrirModalCategorias()" style="width: 33%; padding: 14px; font-size: 13px; background: #0284c7; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">
                         🔍 2. Analizar Inventario Excel
                     </button>
+                    <a href="/api/descargar-memoria-global" target="_blank" style="width: 33%; padding: 14px; font-size: 13px; background: #166534; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; text-align: center; text-decoration: none; display: inline-block; box-sizing: border-box;">
+                        📊 3. Descargar Historial Completo
+                    </a>
+                </div>
+                        📥 1. Sincronizar Memoria con ML
+                    </button>
+                    
                 </div>
 
                 <!-- MAPEO MANUAL Y VISTA PREVIA VISUAL DEL EXCEL -->
@@ -1334,7 +1341,12 @@ HTML_INTERFACE = """
                             </datalist>
                         `;
                     } else {
-                        controlHTML = `<input type="text" id="m-txt-${att.id}" value="${vGuardado}" placeholder="Ej: ${att.hint || 'Valor'}">`;
+                        // 🟢 SOLUCIÓN NUMBER_UNIT: Aviso visual para campos que requieren unidad
+                        if (att.value_type === "number_unit") {
+                            controlHTML = `<input type="text" id="m-txt-${att.id}" value="${vGuardado}" placeholder="¡Requiere unidad! (Ej: ${att.hint || '1200 Mbps, 5 GHz, 110V'})" style="border-left: 4px solid #f59e0b;">`;
+                        } else {
+                            controlHTML = `<input type="text" id="m-txt-${att.id}" value="${vGuardado}" placeholder="Ej: ${att.hint || 'Valor'}">`;
+                        }
                     }
 
                     const isReq = att.required;
@@ -1669,10 +1681,14 @@ HTML_INTERFACE = """
                 const response = await fetch('/previsualizar', { method: 'POST', body: formData });
                 const resultado = await response.json();
 
+                // ... (tu código de arriba sigue igual hasta llegar a esto)
                 if (resultado.error) return consola.innerText = "❌ " + resultado.error;
 
                 const tbody = document.getElementById('tabla-body');
-                tbody.innerHTML = "";
+                
+                // 🟢 1. CREAMOS UNA VARIABLE PARA GUARDAR TODO EL HTML (Super Rápido)
+                let nuevoHTML = ""; 
+                let indicesParaFotos = []; // Guardamos los IDs para pintar las fotos al final
 
                 const agrupados = {};
                 resultado.productos.forEach((prod, idx) => {
@@ -1684,7 +1700,7 @@ HTML_INTERFACE = """
                 for (const [catName, data] of Object.entries(agrupados)) {
                     const catIdClase = 'cat-grp-' + data.id.replace(/[^a-zA-Z0-9]/g, '');
                     
-                    tbody.innerHTML += `
+                    nuevoHTML += `
                         <tr class="cat-header" style="background: #e2e8f0; border-bottom: 2px solid #cbd5e1;">
                             <td style="padding: 12px; width: 30px;">
                                 <input type="checkbox" checked title="Seleccionar toda la categoría" data-target="${catIdClase}" onclick="toggleCategory(event, this)">
@@ -1735,7 +1751,7 @@ HTML_INTERFACE = """
                             alertaImgHTML = `<div style="background:#fee2e2; border:1px solid #fca5a5; padding:6px; border-radius:6px; margin-bottom:6px; color:#b91c1c; font-size:11px; font-weight:bold; line-height: 1.3; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">⚠️ ${prod.AlertaImagen}</div>`;
                         }
 
-                        tbody.innerHTML += `
+                        nuevoHTML += `
                             <tr id="row-${idx}" class="item-row ${catIdClase}" data-fila="${prod.FilaExcel}">
                                 <td><input type="checkbox" class="prod-check" data-idx="${idx}" checked></td>
                                 <td>
@@ -1796,9 +1812,17 @@ HTML_INTERFACE = """
                                 </td>
                             </tr>
                         `;
-                        renderizarGaleriaFila(idx);
+                        indicesParaFotos.push(idx); // Guardamos para pintarlas después
                     });
                 }
+
+                // 🟢 2. INYECTAMOS TODO DE UN SOLO GOLPE (Evita que el navegador se congele)
+                tbody.innerHTML = nuevoHTML;
+
+                // 🟢 3. PINTAMOS LAS FOTOS AHORA QUE LA TABLA YA EXISTE
+                indicesParaFotos.forEach(idx => {
+                    renderizarGaleriaFila(idx);
+                });
 
                 const repBox = document.getElementById('resumen-reporte-box');
                 document.getElementById('texto-resumen-reporte').innerHTML = `
@@ -2460,6 +2484,9 @@ def endpoint_atributos_categoria(cat_id: str):
                 if aid not in PROHIBIDOS and not es_read_only:
                     es_requerido = tags.get("required", False)
                     valores_validos = [v.get("name") for v in att.get("values", [])[:10]]
+                    # Extraemos las unidades permitidas oficiales
+                    unidades_permitidas = [u.get("name") for u in att.get("allowed_units", [])]
+                    
                     relevantes.append({
                         "id": aid,
                         "name": att.get("name"),
@@ -2467,7 +2494,8 @@ def endpoint_atributos_categoria(cat_id: str):
                         "hint": att.get("hint", ""),
                         "values": att.get("values", [])[:20],
                         "required": es_requerido,
-                        "valid_values": valores_validos
+                        "valid_values": valores_validos,
+                        "allowed_units": unidades_permitidas
                     })
             relevantes.sort(key=lambda x: not x["required"])
             return relevantes
@@ -2752,7 +2780,7 @@ def previsualizar_archivo(
     archivos_a_escanear = listar_archivos_token()
     inventario_por_cuenta = {}
 
-    actualizar_progreso(15, "Cargando memoria local de inventario...")
+    actualizar_progreso(15, "Cargando memoria local ultra-rápida...")
     memoria_local = cargar_memoria()
     for arch in archivos_a_escanear:
         nombre_c = obtener_nombre_cuenta(arch)
@@ -2768,10 +2796,8 @@ def previsualizar_archivo(
     headers_ref = {"Authorization": f"Bearer {token_ref}", "Content-Type": "application/json"} if token_ref else {}
 
     mapa_manual = {
-        "tit": col_tit if col_tit else None,
-        "sku": col_sku if col_sku else None,
-        "mod": col_mod if col_mod else None,
-        "pre": col_pre if col_pre else None,
+        "tit": col_tit if col_tit else None, "sku": col_sku if col_sku else None,
+        "mod": col_mod if col_mod else None, "pre": col_pre if col_pre else None,
         "stk": col_stk if col_stk else None
     }
 
@@ -2783,14 +2809,13 @@ def previsualizar_archivo(
         return {"error": f"Error heurístico leyendo el archivo: {str(e)}"}
 
     idx_inicio = max(0, inicio - 1)
-    
+    # 🟢 ACELERADOR: Si hay un límite, tomamos TODO el excel desde el inicio. El escáner saltará rápido.
     if cantidad_limite > 0:
         filas_rango = filas_procesadas[idx_inicio:]
     else:
         filas_rango = filas_procesadas[idx_inicio:fin]
         
     total_filas = len(filas_rango)
-
     productos_activos = []
     cache_categorias_adivinadas = {}
     
@@ -2798,99 +2823,107 @@ def previsualizar_archivo(
     reporte_procesados = []
     aprobados_count = 0
     omitidos_count = 0
-    
-    memoria_local = cargar_memoria()
 
     skus_activos_globales = set()
     titulos_activos_globales = set()
     for nom_c, inv in inventario_por_cuenta.items():
         titulos_activos_globales.update(inv['titulos'])
         skus_activos_globales.update(inv['skus'])
-        if nom_c in memoria_local:
-            titulos_activos_globales.update(memoria_local[nom_c].get('titulos', []))
-            skus_activos_globales.update(memoria_local[nom_c].get('skus', []))
 
+    # 🟢 MAPEO RÁPIDO GLOBAL
     for idx_g, item_g in enumerate(filas_procesadas):
-        titulo_g = str(item_g.get("Titulo", "")).strip()
-        titulo_norm_g = titulo_g.lower()
-        titulo_trunc_g = titulo_g[:60].strip().lower()
+        titulo_norm_g = str(item_g.get("Titulo", "")).strip().lower()
         sku_raw_g = str(item_g.get("SKU", "")).strip().lower()
-        if sku_raw_g.endswith(".0"):
-            sku_raw_g = sku_raw_g[:-2]
+        if sku_raw_g.endswith(".0"): sku_raw_g = sku_raw_g[:-2]
             
         ya_existe_g = False
         if sku_raw_g and sku_raw_g not in ["nan", "omitir", "n/a", "null"] and sku_raw_g in skus_activos_globales:
             ya_existe_g = True
         else:
             for t_ml in titulos_activos_globales:
-                if titulo_norm_g == t_ml or titulo_norm_g.startswith(t_ml) or t_ml.startswith(titulo_norm_g) or titulo_trunc_g == t_ml:
+                if titulo_norm_g == t_ml or titulo_norm_g.startswith(t_ml) or t_ml.startswith(titulo_norm_g):
                     ya_existe_g = True
                     break
         
         fila_completa_g = item_g.copy()
         fila_completa_g["Fila Original Excel"] = idx_g + 2
-        fila_completa_g["Estado Publicación"] = "Ya publicado" if ya_existe_g else "Libre"
+        fila_completa_g["Estado Publicación"] = "Ya publicado" if ya_existe_g else "No Publicado"
         reporte_filas_todas.append(fila_completa_g)
 
     for indice, item in enumerate(filas_rango):
-        # Detener la búsqueda si alcanzamos la meta de artículos libres deseados
         if cantidad_limite > 0 and aprobados_count >= cantidad_limite:
             break
 
-        time.sleep(0.01)
-        
         titulo = str(item.get("Titulo", "")).strip()
         titulo_norm = titulo.lower()
-        titulo_truncado = titulo[:60].strip().lower()
         sku_raw = str(item.get("SKU", "")).strip().lower()
-        if sku_raw.endswith(".0"):
-            sku_raw = sku_raw[:-2]
-        sku_norm = sku_raw
+        if sku_raw.endswith(".0"): sku_raw = sku_raw[:-2]
 
         estado_cuentas = {}
         existe_en_todas = True
         existe_en_seleccionada = False
         nombre_seleccionada = obtener_nombre_cuenta(cuenta) if cuenta != "TODAS" else "TODAS"
 
+        # 🟢 VERIFICACIÓN ULTRA RÁPIDA (Filtro temprano)
         for nom_c, inv in inventario_por_cuenta.items():
-            titulos_activos = set(inv['titulos'])
-            skus_activos = set(inv['skus'])
+            existe = (sku_raw and sku_raw not in ["nan", "omitir", "n/a", "null"] and sku_raw in inv['skus'])
+            if not existe:
+                for t_ml in inv['titulos']:
+                    if titulo_norm == t_ml or titulo_norm.startswith(t_ml) or t_ml.startswith(titulo_norm):
+                        existe = True
+                        break
             
-            if nom_c in memoria_local:
-                titulos_activos.update(memoria_local[nom_c].get('titulos', []))
-                skus_activos.update(memoria_local[nom_c].get('skus', []))
-
-            existe_por_sku = (sku_norm and sku_norm not in ["nan", "omitir", "n/a", "null"] and sku_norm in skus_activos)
-            
-            existe_por_titulo = False
-            for t_ml in titulos_activos:
-                if titulo_norm == t_ml or titulo_norm.startswith(t_ml) or t_ml.startswith(titulo_norm) or titulo_truncado == t_ml:
-                    existe_por_titulo = True
-                    break
-            
-            ya_existe = existe_por_sku or existe_por_titulo
-            
-            if ya_existe:
+            if existe:
                 estado_cuentas[nom_c] = "EXISTE"
-                if nom_c == nombre_seleccionada:
-                    existe_en_seleccionada = True
+                if nom_c == nombre_seleccionada: existe_en_seleccionada = True
             else:
                 estado_cuentas[nom_c] = "LIBRE"
                 existe_en_todas = False
 
+        if not titulo or titulo == "nan":
+            motivo_estado = "🚫 Omitido (Fila vacía o sin Título)"
+        else:
+            motivo_estado = "✅ Aprobado (Listo para Publicar)"
+            if filtrar_duplicados == "true":
+                if cuenta == "TODAS" and existe_en_todas:
+                    motivo_estado = "🚫 Omitido (Ya publicado en todas las cuentas)"
+                elif cuenta != "TODAS" and existe_en_seleccionada:
+                    motivo_estado = "🚫 Omitido (Ya publicado en la cuenta destino)"
+                elif cuenta == "TODAS" and any(est == "EXISTE" for est in estado_cuentas.values()):
+                    motivo_estado = "🚫 Omitido (Ya publicado en al menos una cuenta)"
+
+        # 🟢 EL SALTO: Si es omitido, pasamos a la siguiente celda INMEDIATAMENTE sin consultar a Mercado Libre.
+        if "🚫" in motivo_estado:
+            omitidos_count += 1
+            if filtrar_duplicados == "true":
+                if cantidad_limite > 0 and indice % 5 == 0: # Actualizamos la barra cada 5 para no saturar visualmente
+                    pct = int(20 + (aprobados_count / max(1, cantidad_limite)) * 75)
+                    actualizar_progreso(pct, f"[{aprobados_count}/{cantidad_limite}] Saltando publicados... (Fila {idx_inicio + indice + 2})")
+                continue
+
+        # Si llegó aquí, es un artículo LIBRE. Ahora sí gastamos tiempo en consultar ML y buscar fotos.
+        aprobados_count += 1
+        
+        if cantidad_limite > 0:
+            porcentaje_actual = int(20 + (aprobados_count / max(1, cantidad_limite)) * 75)
+            mensaje_progreso = f"[{aprobados_count}/{cantidad_limite}] Procesando nuevo: {titulo[:30]}..."
+        else:
+            porcentaje_actual = int(20 + ((indice + 1) / max(1, total_filas)) * 75)
+            mensaje_progreso = f"[{indice+1}/{total_filas}] Sincronizando: {titulo[:30]}..."
+
+        actualizar_progreso(porcentaje_actual, mensaje_progreso)
+        time.sleep(0.01)
+
         sku = item.get("SKU", "")
         modelo = item.get("Modelo", "")
-        
-        try:
-            precio = round(float(item.get("Precio", 0)), 2)
-        except Exception:
-            precio = 0.0
-
+        try: precio = round(float(item.get("Precio", 0)), 2)
+        except: precio = 0.0
         stock = item.get("Stock", 0)
         marca = item.get("Marca", "")
         cat_origen = item.get("CategoriaOrigen", "")
         nom_hoja = item.get("Hoja", "")
 
+        # Adivinamos categoría solo para los que pasaron el filtro
         if headers_ref and titulo:
             if titulo in cache_categorias_adivinadas:
                 cat_id, cat_nombre = cache_categorias_adivinadas[titulo]
@@ -2900,45 +2933,10 @@ def previsualizar_archivo(
         else:
             cat_id, cat_nombre = "MLV-DESCONOCIDA", "Categoría General"
 
-        motivo_estado = "✅ Aprobado (Listo para Publicar)"
-        
-        if not titulo or titulo == "nan":
-            motivo_estado = "🚫 Omitido (Fila vacía o sin Título)"
-        else:
-            if filtrar_duplicados == "true":
-                if cuenta == "TODAS" and existe_en_todas:
-                    motivo_estado = "🚫 Omitido (Ya publicado en todas las cuentas)"
-                elif cuenta != "TODAS" and existe_en_seleccionada:
-                    motivo_estado = "🚫 Omitido (Ya publicado en la cuenta destino)"
-                elif cuenta == "TODAS" and any(est == "EXISTE" for est in estado_cuentas.values()):
-                    motivo_estado = "🚫 Omitido (Ya publicado en al menos una cuenta)"
-            
-            if motivo_estado.startswith("✅") and not coincide_con_categoria_elegida(titulo, cat_id, categoria_filtro):
-                motivo_estado = f"🚫 Omitido (No coincide con la categoría filtro: {categoria_filtro})"
-
-        if "🚫" in motivo_estado:
-            omitidos_count += 1
-            if filtrar_duplicados == "true":
-                # LÓGICA DE PROGRESO CORREGIDA PARA LAS OMITIDAS
-                if cantidad_limite > 0:
-                    pct = int(20 + (aprobados_count / max(1, cantidad_limite)) * 75)
-                    actualizar_progreso(pct, f"[{aprobados_count}/{cantidad_limite}] Buscando libres... (Omitiendo fila {idx_inicio + indice + 2})")
-                else:
-                    pct = int(20 + ((indice + 1) / max(1, total_filas)) * 75)
-                    actualizar_progreso(pct, f"[{indice+1}/{total_filas}] Omitiendo artículo ya publicado...")
-                continue
-
-        aprobados_count += 1
-        
-        # LÓGICA DE PROGRESO CORREGIDA PARA LAS APROBADAS
-        if cantidad_limite > 0:
-            porcentaje_actual = int(20 + (aprobados_count / max(1, cantidad_limite)) * 75)
-            mensaje_progreso = f"[{aprobados_count}/{cantidad_limite}] Sincronizando: {titulo[:30]}..."
-        else:
-            porcentaje_actual = int(20 + ((indice + 1) / max(1, total_filas)) * 75)
-            mensaje_progreso = f"[{indice+1}/{total_filas}] Sincronizando: {titulo[:30]}..."
-
-        actualizar_progreso(porcentaje_actual, mensaje_progreso)
+        if not coincide_con_categoria_elegida(titulo, cat_id, categoria_filtro):
+            motivo_estado = f"🚫 Omitido (No coincide con la categoría filtro: {categoria_filtro})"
+            aprobados_count -= 1 # Lo restamos porque lo rechazó el filtro de categoría
+            continue
         
         fila_completa = item.copy()
         fila_completa["Fila Original Excel"] = idx_inicio + indice + 2
@@ -3024,12 +3022,43 @@ def descargar_reporte(nombre_archivo: str):
         return FileResponse(ruta, filename=nombre_archivo)
     return {"error": "Archivo no encontrado"}
 
+@app.get("/api/descargar-memoria-global")
+def descargar_memoria_global():
+    memoria = cargar_memoria()
+    if not memoria:
+        return {"error": "La memoria está vacía. Sincroniza primero con ML."}
+
+    stream = io.BytesIO()
+    with pd.ExcelWriter(stream, engine='openpyxl') as writer:
+        for cuenta, datos in memoria.items():
+            titulos = datos.get('titulos', [])
+            skus = datos.get('skus', [])
+            
+            # Igualamos las listas llenando con vacíos si una es más corta
+            max_len = max(len(titulos), len(skus))
+            titulos.extend([""] * (max_len - len(titulos)))
+            skus.extend([""] * (max_len - len(skus)))
+            
+            df = pd.DataFrame({
+                "Títulos Publicados": titulos,
+                "SKUs Registrados": skus
+            })
+            
+            nombre_hoja = cuenta[:30] # Excel limita los nombres de hoja a 31 caracteres
+            df.to_excel(writer, sheet_name=nombre_hoja, index=False)
+            
+    stream.seek(0)
+    headers = {
+        'Content-Disposition': f'attachment; filename="Reporte_Memoria_ERP_{int(time.time())}.xlsx"'
+    }
+    return StreamingResponse(stream, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers)
+
 @app.post("/publicar-lote")
 def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
     global PROGRESO_ACTUAL
     PROGRESO_ACTUAL = {
         "porcentaje": 0,
-        "mensaje": "Iniciando conexión con Mercado Libre...",
+        "mensaje": "Preparando artículos para publicación rápida...",
         "activo": True,
         "exitos": 0,
         "errores": 0
@@ -3040,6 +3069,7 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
     total_items = len(productos) * len(archivos_destino)
     procesados = 0
 
+    # Cargamos el inventario desde el archivo JSON súper rápido, SIN conectarnos a ML a descargar todo de nuevo.
     memoria_local = cargar_memoria()
 
     for arch_token in archivos_destino:
@@ -3052,20 +3082,13 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
 
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         
-        inventario_actual = {'titulos': set(), 'skus': set()}
-        try:
-            inventario_actual = obtener_inventario_ml(headers)
-        except Exception:
-            pass
-            
-        titulos_activos = set(inventario_actual['titulos'])
-        skus_activos = set(inventario_actual['skus'])
-        
+        # Obtenemos los activos únicamente de la memoria local rápida
+        titulos_activos = set()
+        skus_activos = set()
         if nombre_perfil in memoria_local:
             titulos_activos.update(memoria_local[nombre_perfil].get('titulos', []))
             skus_activos.update(memoria_local[nombre_perfil].get('skus', []))
 
-        # Memoria temporal para esta ráfaga de ciclos
         titulos_memoria_programa = set()
         skus_memoria_programa = set()
 
@@ -3089,7 +3112,7 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                     break
 
             if existe_por_sku or existe_por_titulo:
-                logs_totales.append(f"⏭️ [{nombre_perfil}] OMITIDO: '{titulo_original[:20]}...' (o su SKU) ya existe o fue procesado exitosamente.")
+                logs_totales.append(f"⏭️ [{nombre_perfil}] OMITIDO: '{titulo_original[:20]}...' ya existe en la memoria local.")
                 continue
 
             actualizar_progreso(porcentaje, f"[{nombre_perfil}] Publicando ({procesados}/{total_items}): {titulo_original[:25]}...")
@@ -3169,7 +3192,7 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                         if res_desc.status_code not in [200, 201]:
                             requests.put(url_desc, headers=headers, json=payload_desc, timeout=10)
                     except Exception as e_desc:
-                        print(f"Aviso - Descripción no subida a {item_id}: {e_desc}")
+                        pass
 
                     try:
                         url_put = f"{API_ML}/items/{item_id}"
@@ -3180,7 +3203,6 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                     logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO! -> {permalink}")
                     PROGRESO_ACTUAL["exitos"] += 1
                     
-                    # Carga exitosa: Añadimos a la memoria local y al archivo
                     titulos_memoria_programa.add(titulo_norm)
                     if sku_norm and sku_norm != "nan":
                         skus_memoria_programa.add(sku_norm)
@@ -3192,7 +3214,6 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                         titulo_mascarado = re.sub(r'(?i)\b(canon|hp|epson|brother|samsung|apple|sony)\b', 'Compatible', titulo_original)
                         datos_publicacion["title"] = titulo_mascarado
                         
-                        url_items = f"{API_ML}/items"
                         res_bypass = requests.post(url_items, headers=headers, json=datos_publicacion, timeout=12)
                         if res_bypass.status_code == 201:
                             item_data = res_bypass.json()
