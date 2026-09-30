@@ -18,21 +18,26 @@ from dotenv import load_dotenv
 ARCHIVO_MEMORIA = "memoria_erp.json"
 ARCHIVO_ERRORES_IA = "memoria_errores_ia.json"
 
+import threading
+ia_memory_lock = threading.RLock()
+
 def cargar_errores_ia():
-    if os.path.exists(ARCHIVO_ERRORES_IA):
-        try:
-            with open(ARCHIVO_ERRORES_IA, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except: pass
-    return []
+    with ia_memory_lock:
+        if os.path.exists(ARCHIVO_ERRORES_IA):
+            try:
+                with open(ARCHIVO_ERRORES_IA, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except: pass
+        return []
 
 def guardar_error_ia(nuevo_error):
-    errores = cargar_errores_ia()
-    if nuevo_error in errores:
-        errores.remove(nuevo_error) # Lo quitamos de su posición vieja
-    errores.append(nuevo_error)     # Lo ponemos al final como el MÁS RECIENTE
-    with open(ARCHIVO_ERRORES_IA, "w", encoding="utf-8") as f:
-        json.dump(errores, f, ensure_ascii=False, indent=4)
+    with ia_memory_lock:
+        errores = cargar_errores_ia()
+        if nuevo_error in errores:
+            errores.remove(nuevo_error) # Lo quitamos de su posición vieja
+        errores.append(nuevo_error)     # Lo ponemos al final como el MÁS RECIENTE
+        with open(ARCHIVO_ERRORES_IA, "w", encoding="utf-8") as f:
+            json.dump(errores, f, ensure_ascii=False, indent=4)
 ULTIMO_REPORTE = [] # <-- NUEVA VARIABLE GLOBAL AÑADIDA AQUI
 
 PROGRESO_ACTUAL = {
@@ -214,32 +219,34 @@ def analizar_error_ml(respuesta):
         for c in causas:
             msg = str(c.get('message', c))
             
-            # Ignorar advertencias internas de ML (campos fiscales)
+            # Ignorar advertencias internas de ML
             if "ignored because it is not modifiable" in msg:
                 continue
 
-            if "pictures are mandatory" in msg:
+            # TRADUCCIONES OFICIALES AL ESPAÑOL
+            if "User has not mode me1" in msg or "Catalog has not mode" in msg:
+                errores_procesados.add("🚚 Tu cuenta o categoría NO soporta Mercado Envíos. Cambia el 'Envío' a 'Acordar con Vendedor' (⚪).")
+            elif "pictures are mandatory" in msg:
                 errores_procesados.add("📸 Las exposiciones Clásica/Premium exigen al menos 1 foto obligatoria.")
             elif "500 pixeles" in msg or "minimum size" in msg or "500 pixels" in msg:
                 errores_procesados.add("📸 Algunas fotos son menores a 500x500px y fueron rechazadas.")
-            elif "The provided unit is not valid" in msg or "The provided number is not valid" in msg:
+            elif "The provided unit is not valid" in msg or "provided number is not valid" in msg:
                 attr_match = re.search(r'Attribute (?:\[)?([A-Z0-9_]+)(?:\])?', msg)
                 attr_name = attr_match.group(1) if attr_match else "Desconocido"
-                errores_procesados.add(f"📏 Falta unidad de medida (GB, pulgadas, Hz, etc) en: {attr_name}.")
+                errores_procesados.add(f"📏 Falta la unidad de medida o el número es inválido en el atributo: [{attr_name}].")
+            elif "is required and was omitted" in msg or "are required" in msg:
+                attr_match = re.search(r'\[([A-Z0-9_]+)\]', msg)
+                attr_name = attr_match.group(1) if attr_match else "Desconocido"
+                errores_procesados.add(f"⚠️ El atributo [{attr_name}] es OBLIGATORIO y está vacío.")
             elif "is not valid, item values" in msg:
                 attr_match = re.search(r'Attribute (?:\[)?([A-Z0-9_]+)(?:\])?', msg)
                 attr_name = attr_match.group(1) if attr_match else "Desconocido"
-                errores_procesados.add(f"❌ Valor 'N/A', 'No Aplica' o formato inválido rechazado en: {attr_name}.")
-            elif "is required and was omitted" in msg:
-                attr_match = re.search(r'Attribute (?:\[)?([A-Z0-9_]+)(?:\])?', msg)
-                attr_name = attr_match.group(1) if attr_match else "Desconocido"
-                errores_procesados.add(f"⚠️ Atributo obligatorio faltante: {attr_name}.")
+                errores_procesados.add(f"❌ Valor rechazado por ML ('N/A' o formato inválido) en el atributo: [{attr_name}].")
             else:
-                msg_limpio = msg.replace("Attribute", "Atributo").replace("is not valid", "no es válido").replace("is required", "es obligatorio")
-                errores_procesados.add(f"⚠️ {msg_limpio}")
+                errores_procesados.add(f"⚠️ {msg}")
         
         if not errores_procesados:
-            return "Error desconocido (Revisa que tu Título o SKU no incumplan políticas de ML)."
+            return "Error desconocido de ML."
             
         return " | ".join(list(errores_procesados))[:300]
     except Exception:
@@ -610,10 +617,6 @@ HTML_INTERFACE = """
                         📊 3. Descargar Historial Completo
                     </a>
                 </div>
-                        📥 1. Sincronizar Memoria con ML
-                    </button>
-                    
-                </div>
 
                 <!-- MAPEO MANUAL Y VISTA PREVIA VISUAL DEL EXCEL -->
                 <div id="mapping-bar" class="mapping-bar">
@@ -773,6 +776,13 @@ HTML_INTERFACE = """
                             <input type="number" id="cat-rango-fin" value="100" placeholder="Hasta" style="width: 50%;">
                         </div>
                     </div>
+                    <div class="step-card" style="grid-column: span 2;">
+                        <span class="step-num">Paso 5</span>
+                        <label>Datos del Catálogo (Empresa y Contacto):</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="cat-empresa" placeholder="Nombre de tu Empresa" style="width: 50%;">
+                            <input type="text" id="cat-ws" placeholder="Tu WhatsApp (Ej: 584141234567)" style="width: 50%;">
+                        </div>
                     </div>
                 </div>
 
@@ -1221,6 +1231,11 @@ HTML_INTERFACE = """
                         if (pe) pe.innerText = info.errores;
                     }
                     
+                    // 🟢 AÑADE ESTO PARA ARREGLAR EL CONTADOR 26/18
+                    if(info.total !== undefined && info.total > 0) {
+                        document.getElementById('pub-progreso-total').innerText = info.total;
+                    }
+                    
                     const pBarra = document.getElementById('pub-progreso-barra');
                     if(pBarra) {
                         document.getElementById('pub-progreso-porcentaje').innerText = info.porcentaje;
@@ -1347,7 +1362,16 @@ HTML_INTERFACE = """
                 const res = await fetch(`/api/atributos-categoria/${catId}`);
                 const listaAttrML = await res.json();
 
-                let htmlContent = `
+                // 🟢 LECTURA DE ERRORES PARA EL CHECKLIST
+                const erroresItem = window.erroresInteractiviosActuales ? (window.erroresInteractiviosActuales[idx] || "") : "";
+                let bannerErrores = "";
+                if (erroresItem) {
+                    bannerErrores = `<div style="background: #fef2f2; border-left: 4px solid #ef4444; padding: 12px; margin-bottom: 15px; font-size: 12px; color: #b91c1c; border-radius: 4px;">
+                        <b style="font-size:14px;">⚠️ Checklist de Errores:</b><br>Corrige los campos marcados en rojo abajo.<br><br>${erroresItem}
+                    </div>`;
+                }
+
+                let htmlContent = bannerErrores + `
                     <div class="modal-field">
                         <label>Marca: <span style="color:#ef4444; font-weight:bold;" title="Obligatorio">*</span></label>
                         <input type="text" id="m-mar" value="${attrBase.marca || ''}">
@@ -1365,13 +1389,17 @@ HTML_INTERFACE = """
                 listaAttrML.forEach(att => {
                     const vGuardado = obtenerValorGuardado(att, attrAdic, attrBase);
                     let controlHTML = "";
+                    
+                    // 🟢 DETECCIÓN DEL ERROR ESPECÍFICO PARA PINTARLO DE ROJO
+                    let isErrorAttr = erroresItem.includes(`[${att.id}]`);
+                    let styleBorder = isErrorAttr ? 'border: 2px solid #ef4444; background-color: #fff0f0;' : 'border-color: #0284c7;';
+                    let labelAlerta = isErrorAttr ? ' <span style="color:#ef4444; font-size:12px; font-weight:bold;">🚨 ¡CORREGIR AQUÍ!</span>' : '';
 
-                    // 🟢 NUEVA LÓGICA: Si es number_unit, creamos dos campos
                     if (att.value_type === "number_unit") {
                         let savedNum = "";
                         let savedUnit = "";
                         if (vGuardado) {
-                            let match = String(vGuardado).match(/^([\d\.,]+)\s*(.*)$/);
+                            let match = String(vGuardado).match(/^([\\d\\.,]+)\\s*(.*)$/);
                             if (match) {
                                 savedNum = match[1];
                                 savedUnit = match[2].trim();
@@ -1390,8 +1418,8 @@ HTML_INTERFACE = """
 
                         controlHTML = `
                             <div style="display: flex; gap: 5px;">
-                                <input type="number" step="any" id="m-num-${att.id}" value="${savedNum}" placeholder="Número (Ej: 1200)" style="flex: 2; border-color: #0284c7;">
-                                <select id="m-unit-${att.id}" style="flex: 1; border-color: #0284c7;">
+                                <input type="number" step="any" id="m-num-${att.id}" value="${savedNum}" placeholder="Número" style="flex: 2; ${styleBorder}">
+                                <select id="m-unit-${att.id}" style="flex: 1; ${styleBorder}">
                                     <option value="">Unidad</option>
                                     ${unitOptions}
                                 </select>
@@ -1399,22 +1427,20 @@ HTML_INTERFACE = """
                             </div>
                         `;
                     } 
-                    // Lógica normal para listas
                     else if (att.values && att.values.length > 0) {
                         let optionsHTML = "";
                         att.values.forEach(valML => {
                             optionsHTML += `<option value="${valML.name}">`;
                         });
                         controlHTML = `
-                            <input type="text" list="dl-${att.id}" id="m-txt-${att.id}" value="${vGuardado}" placeholder="Elige de la lista o escribe una opción libre...">
+                            <input type="text" list="dl-${att.id}" id="m-txt-${att.id}" value="${vGuardado}" placeholder="Elige o escribe..." style="${styleBorder}">
                             <datalist id="dl-${att.id}">
                                 ${optionsHTML}
                             </datalist>
                         `;
                     } 
-                    // Lógica normal para texto
                     else {
-                        controlHTML = `<input type="text" id="m-txt-${att.id}" value="${vGuardado}" placeholder="Ej: ${att.hint || 'Valor'}">`;
+                        controlHTML = `<input type="text" id="m-txt-${att.id}" value="${vGuardado}" placeholder="Ej: ${att.hint || 'Valor'}" style="${styleBorder}">`;
                     }
 
                     const isReq = att.required;
@@ -1422,7 +1448,7 @@ HTML_INTERFACE = """
                     
                     const bloqueHTML = `
                         <div class="modal-field">
-                            <label>${att.name} ${asterisco} <span style="font-weight:normal; color:#64748b; font-size:10px;">(${att.value_type})</span></label>
+                            <label>${att.name} ${asterisco} <span style="font-weight:normal; color:#64748b; font-size:10px;">(${att.value_type})</span>${labelAlerta}</label>
                             ${controlHTML}
                         </div>
                     `;
@@ -3220,18 +3246,25 @@ def descargar_memoria_global():
 @app.post("/publicar-lote")
 def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
     global PROGRESO_ACTUAL
+    
+    # 1. Calculamos el destino y el total una sola vez aquí arriba
+    archivos_destino = listar_archivos_token() if cuenta == "TODAS" else [cuenta]
+    total_items = len(productos) * len(archivos_destino) 
+
     PROGRESO_ACTUAL = {
         "porcentaje": 0,
         "mensaje": "Preparando artículos para publicación rápida...",
         "activo": True,
         "exitos": 0,
-        "errores": 0
+        "errores": 0,
+        "total": total_items
     }
-    archivos_destino = listar_archivos_token() if cuenta == "TODAS" else [cuenta]
+    
+    # 2. Inicializamos el resto de variables (sin repetir las de arriba)
     logs_totales = []
     errores_interactivos = {}
-    total_items = len(productos) * len(archivos_destino)
     procesados = 0
+
 
     # Cargamos el inventario desde el archivo JSON súper rápido, SIN conectarnos a ML a descargar todo de nuevo.
     memoria_local = cargar_memoria()
