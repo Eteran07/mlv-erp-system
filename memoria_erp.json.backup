@@ -11476,7 +11476,12 @@
             "aerocoolverkho 3- disipador de calor",
             "asta toner xerox cline std blak dmo",
             "ec600 external enclosure for 2.5 inch hdd/ssd color boxblack",
-            "asta toner xerox negro mohave  b230/b225/b235 b230at"
+            "asta toner xerox negro mohave  b230/b225/b235 b230at",
+            "audifonos jbl tune 220tws microfono inalambrico",
+            "audifonos jbl endurance jump microfono inalambrico bluetooh",
+            "acer laptop aspire 15 intel® core i9-13900h  15.6",
+            "asta toner cb435a-cb436a-ce278a-ce285a",
+            "asta toner cf283a negro"
         ],
         "skus": [
             "0024859ne",
@@ -14069,7 +14074,17 @@
             "actc-na20310.02",
             "a-006r04387",
             "ec600-bcbk",
-            "a-006r04403"
+            "a-006r04403",
+            "ad4s320016g22-sgn",
+            "archer c20 (w)",
+            "11uc-1276us",
+            "asu650ss-512gt-r",
+            "asu650ss-256gt-r",
+            "asu650ss-480gt-r",
+            "x1404za-nk090w",
+            "ur350-32g-rsr/bk",
+            "a-cb435a-ce278a",
+            "a-cf283a"
         ]
     },
     "RAFAEL": {
@@ -16194,7 +16209,8 @@
             "asta toner xerox cline std blak dmo",
             "ec600 external enclosure for 2.5 inch hdd/ssd color boxblack",
             "asta toner xerox negro mohave  b230/b225/b235 b230at",
-            "acer laptop aspire 15 intel® core i9-13900h  15.6"
+            "acer laptop aspire 15 intel® core i9-13900h  15.6",
+            "asta toner cf283a negro"
         ],
         "skus": [
             "e0396",
@@ -18326,7 +18342,8 @@
             "archer t3u plus",
             "asu650ss-256gt-r",
             "al15-43p-r8nw-es",
-            "asu650ss-480gt-r"
+            "asu650ss-480gt-r",
+            "a-cf283a"
         ]
     }
 }

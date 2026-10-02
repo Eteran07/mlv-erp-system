@@ -1,4 +1,5 @@
 import os
+import uuid
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 import io
 import glob
@@ -11,7 +12,10 @@ import time
 import asyncio
 import urllib.parse
 from datetime import datetime
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException, status
+from typing import List
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+import secrets
 from fastapi.responses import HTMLResponse, FileResponse
 from dotenv import load_dotenv
 
@@ -19,25 +23,65 @@ ARCHIVO_MEMORIA = "memoria_erp.json"
 ARCHIVO_ERRORES_IA = "memoria_errores_ia.json"
 
 import threading
+import sqlite3
+
+ARCHIVO_MEMORIA_IA_DB = "memoria_ia.db"
 ia_memory_lock = threading.RLock()
 
-def cargar_errores_ia():
+def inicializar_bd_ia():
     with ia_memory_lock:
-        if os.path.exists(ARCHIVO_ERRORES_IA):
-            try:
-                with open(ARCHIVO_ERRORES_IA, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except: pass
-        return []
+        conn = sqlite3.connect(ARCHIVO_MEMORIA_IA_DB)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS memoria_erp (
+                cuenta TEXT,
+                tipo TEXT,
+                valor TEXT,
+                UNIQUE(cuenta, tipo, valor)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS errores_ia (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cat_id TEXT NOT NULL,
+                error_texto TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(cat_id, error_texto)
+            )
+        ''')
+        conn.commit()
+        conn.close()
 
-def guardar_error_ia(nuevo_error):
+inicializar_bd_ia()
+
+def cargar_errores_ia(cat_id=""):
     with ia_memory_lock:
-        errores = cargar_errores_ia()
-        if nuevo_error in errores:
-            errores.remove(nuevo_error) # Lo quitamos de su posición vieja
-        errores.append(nuevo_error)     # Lo ponemos al final como el MÁS RECIENTE
-        with open(ARCHIVO_ERRORES_IA, "w", encoding="utf-8") as f:
-            json.dump(errores, f, ensure_ascii=False, indent=4)
+        try:
+            conn = sqlite3.connect(ARCHIVO_MEMORIA_IA_DB)
+            cursor = conn.cursor()
+            if cat_id:
+                cursor.execute('SELECT error_texto FROM errores_ia WHERE cat_id = ? ORDER BY timestamp ASC', (cat_id,))
+            else:
+                cursor.execute('SELECT error_texto FROM errores_ia ORDER BY timestamp ASC')
+            errores = [row[0] for row in cursor.fetchall()]
+            conn.close()
+            return errores
+        except: return []
+
+def guardar_error_ia(nuevo_error, cat_id="GLOBAL"):
+    with ia_memory_lock:
+        try:
+            conn = sqlite3.connect(ARCHIVO_MEMORIA_IA_DB)
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO errores_ia (cat_id, error_texto, timestamp)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(cat_id, error_texto) DO UPDATE SET timestamp = CURRENT_TIMESTAMP
+            ''', (cat_id, nuevo_error))
+            conn.commit()
+            conn.close()
+        except Exception as e: 
+            print(f"Error DB IA: {e}")
 ULTIMO_REPORTE = [] # <-- NUEVA VARIABLE GLOBAL AÑADIDA AQUI
 
 PROGRESO_ACTUAL = {
@@ -67,7 +111,22 @@ from categorizador import (
 from excel_parser import procesar_excel_heuristico, obtener_encabezados_excel, obtener_vista_previa_excel
 
 load_dotenv()
-app = FastAPI(title="ERP Mercado Libre - Dashboard Definitivo")
+security = HTTPBasic()
+
+def verify_auth(credentials: HTTPBasicCredentials = Depends(security)):
+    import os
+    import secrets
+    correct_username = secrets.compare_digest(credentials.username, os.getenv("ERP_USER", "admin"))
+    correct_password = secrets.compare_digest(credentials.password, os.getenv("ERP_PASS", "12345"))
+    if not (correct_username and correct_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Credenciales invalidas",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials
+
+app = FastAPI(title="ERP Mercado Libre - Dashboard Definitivo", dependencies=[Depends(verify_auth)])
 
 DOM_ML = "mercado" + "libre.com"
 API_ML = f"https://api.{DOM_ML}"
@@ -80,6 +139,17 @@ CARPETA_LOTE_IMAGENES = "lote_imagenes"
 os.makedirs(CARPETA_LOTE_IMAGENES, exist_ok=True)
 
 CARPETA_CATALOGOS = "catalogos_generados"
+
+CARPETA_TEMP = "temp_archivos"
+if not os.path.exists(CARPETA_TEMP):
+    os.makedirs(CARPETA_TEMP)
+
+def limpiar_carpeta_temp():
+    for f in os.listdir(CARPETA_TEMP):
+        try: os.remove(os.path.join(CARPETA_TEMP, f))
+        except: pass
+limpiar_carpeta_temp()
+
 os.makedirs(CARPETA_CATALOGOS, exist_ok=True)
 
 CARPETA_REPORTES = "reportes"
@@ -112,29 +182,85 @@ De 8:30am A 5:30pm
 """
 
 def cargar_memoria():
-    if os.path.exists(ARCHIVO_MEMORIA):
+    mem = {}
+    with ia_memory_lock:
         try:
-            with open(ARCHIVO_MEMORIA, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            pass
-    return {}
+            conn = sqlite3.connect(ARCHIVO_MEMORIA_IA_DB)
+            cursor = conn.cursor()
+            cursor.execute("SELECT cuenta, tipo, valor FROM memoria_erp")
+            for cuenta, tipo, valor in cursor.fetchall():
+                if cuenta not in mem:
+                    mem[cuenta] = {'titulos': [], 'skus': []}
+                mem[cuenta][tipo].append(valor)
+            conn.close()
+        except: pass
+    return mem
 
 def guardar_en_memoria(cuenta, titulo, sku):
-    mem = cargar_memoria()
-    if cuenta not in mem:
-        mem[cuenta] = {'titulos': [], 'skus': []}
-    if titulo and titulo not in mem[cuenta]['titulos']:
-        mem[cuenta]['titulos'].append(titulo)
-    if sku and sku not in mem[cuenta]['skus']:
-        mem[cuenta]['skus'].append(sku)
-    with open(ARCHIVO_MEMORIA, "w", encoding="utf-8") as f:
-        json.dump(mem, f, ensure_ascii=False, indent=4)
+    with ia_memory_lock:
+        try:
+            conn = sqlite3.connect(ARCHIVO_MEMORIA_IA_DB)
+            cursor = conn.cursor()
+            if titulo:
+                cursor.execute("INSERT OR IGNORE INTO memoria_erp (cuenta, tipo, valor) VALUES (?, 'titulos', ?)", (cuenta, titulo))
+            if sku:
+                cursor.execute("INSERT OR IGNORE INTO memoria_erp (cuenta, tipo, valor) VALUES (?, 'skus', ?)", (cuenta, sku))
+            conn.commit()
+            conn.close()
+        except: pass
 
 def actualizar_progreso(porcentaje: int, mensaje: str):
     PROGRESO_ACTUAL["porcentaje"] = porcentaje
     PROGRESO_ACTUAL["mensaje"] = mensaje
     PROGRESO_ACTUAL["activo"] = True
+
+
+def auto_reparar_imagen_ml(ruta_completa):
+    if not HAS_PIL: return None
+    try:
+        cambiada = False
+        with Image.open(ruta_completa) as img:
+            # 1. Manejo de transparencia a fondo blanco
+            if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+                if img.mode == "P":
+                    img = img.convert("RGBA")
+                fondo_blanco = Image.new("RGB", img.size, (255, 255, 255))
+                try:
+                    fondo_blanco.paste(img, mask=img.split()[3] if img.mode == "RGBA" else img.split()[1])
+                except:
+                    fondo_blanco.paste(img)
+                img = fondo_blanco
+                cambiada = True
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
+                cambiada = True
+
+            # 2. Asegurar tamano minimo 500x500 y formato cuadrado si es muy pequena
+            w, h = img.size
+            if w < 500 or h < 500:
+                lado_lienzo = max(500, w, h)
+                lienzo = Image.new("RGB", (lado_lienzo, lado_lienzo), (255, 255, 255))
+                
+                ratio = lado_lienzo / max(w, h)
+                new_w = int(w * ratio)
+                new_h = int(h * ratio)
+                img_resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                
+                offset_x = (lado_lienzo - new_w) // 2
+                offset_y = (lado_lienzo - new_h) // 2
+                lienzo.paste(img_resized, (offset_x, offset_y))
+                
+                img = lienzo
+                cambiada = True
+
+            if cambiada:
+                ext = ruta_completa.rsplit(".", 1)[-1].lower()
+                formato = "PNG" if ext == "png" else ("WEBP" if ext == "webp" else "JPEG")
+                img.save(ruta_completa, formato, quality=95)
+                return f"Auto-corregida (Fondo blanco, {img.width}x{img.height}px)"
+    except Exception as e:
+        return f"Error en archivo de imagen: {str(e)}"
+    return None
 
 def emparejar_imagen_local(modelo, sku, titulo):
     if not os.path.exists(CARPETA_LOTE_IMAGENES):
@@ -167,23 +293,20 @@ def emparejar_imagen_local(modelo, sku, titulo):
             
             if limpio_val and len(limpio_val) > 1 and (limpio_val == limpio_arc or limpio_val in limpio_arc or limpio_arc in limpio_val):
                 ruta_completa = os.path.join(CARPETA_LOTE_IMAGENES, arc)
+                alerta_auto = auto_reparar_imagen_ml(ruta_completa)
+                
+                try:
+                    size_mb = os.path.getsize(ruta_completa) / (1024*1024)
+                    if size_mb > 9.5:
+                        alerta_auto = (alerta_auto or "") + " | ⚠️ Peligro: Imagen pesa casi 10MB (límite ML)."
+                except: pass
+
                 try:
                     with open(ruta_completa, "rb") as f:
                         raw_bytes = f.read()
-                        
-                        # VALIDACIÓN ESTRICTA DE 500x500 PIXELES
-                        if HAS_PIL:
-                            try:
-                                with Image.open(io.BytesIO(raw_bytes)) as img:
-                                    if img.width < 500 or img.height < 500:
-                                        alerta = f"Archivo '{arc}' mide {img.width}x{img.height}px. ML exige mín. 500x500px."
-                                        return None, alerta 
-                            except Exception:
-                                pass
-                                
                         data = base64.b64encode(raw_bytes).decode("utf-8")
                         mime = "image/jpeg" if ext in ["jpg", "jpeg"] else f"image/{ext}"
-                        return f"data:{mime};base64,{data}", None
+                        return f"data:{mime};base64,{data}", alerta_auto
                 except Exception as e:
                     print(f"Error cargando foto local {arc}: {e}")
                     
@@ -340,17 +463,25 @@ def obtener_inventario_ml(headers, nombre_perfil="Cuenta"):
         total_items = len(item_ids)
 
         if item_ids:
-            for i in range(0, total_items, 20):
-                # 🟢 Calculamos y enviamos el porcentaje de extracción de SKUs
-                pct = int((i / total_items) * 100)
-                actualizar_progreso(pct, f"[{nombre_perfil}] Extrayendo SKUs y Variaciones: {i} de {total_items}...")
-                
-                ids_str = ",".join(item_ids[i:i+20]) 
+            import concurrent.futures
+            chunks = [item_ids[i:i+20] for i in range(0, total_items, 20)]
+            completados = 0
+            
+            def fetch_detalles(ids_chunk):
+                ids_str = ",".join(ids_chunk)
                 url_items = f"{API_ML}/items?ids={ids_str}"
-                res_detalles = requests.get(url_items, headers=headers)
-                
-                if res_detalles.status_code == 200:
-                    res_json = res_detalles.json()
+                try:
+                    res = requests.get(url_items, headers=headers, timeout=10)
+                    if res.status_code == 200:
+                        return res.json()
+                except: pass
+                return []
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                for res_json in executor.map(fetch_detalles, chunks):
+                    completados += 20
+                    pct = int((completados / total_items) * 100)
+                    actualizar_progreso(pct, f"[{nombre_perfil}] Extrayendo SKUs y Variaciones: {min(completados, total_items)} de {total_items}...")
                     if isinstance(res_json, list):
                         for item in res_json:
                             if isinstance(item, dict) and item.get("code") == 200:
@@ -467,7 +598,7 @@ HTML_INTERFACE = """
         table.data-table th { background: #0f172a; color: white; font-weight: 700; text-align: left; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
         table.data-table tbody tr:nth-child(even) { background: #f8fafc; }
         
-        .item-row { transition: all 0.5s ease; opacity: 1; transform: translateX(0); }
+        .item-row { transition: all 0.5s ease; opacity: 1; transform: translateX(0); content-visibility: auto; contain-intrinsic-size: 200px; }
         .item-row:hover { background: #f1f5f9; box-shadow: inset 4px 0 0 #0284c7; }
         .fade-out { opacity: 0 !important; transform: translateX(50px) !important; pointer-events: none; }
         
@@ -738,7 +869,11 @@ HTML_INTERFACE = """
                         <h1 style="margin:0;">🖼️ Galería Local de Imágenes</h1>
                         <div class="subtitle" style="margin-bottom:0;">Carpeta: <code>lote_imagenes</code>. Verifica visualmente en tiempo real todas las fotos listas para emparejar.</div>
                     </div>
-                    <button onclick="cargarGaleriaLocal()" style="background:#0284c7; padding:10px 18px; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">🔄 Actualizar Galería</button>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="file" id="input-subir-lote" multiple accept="image/*" style="display:none;" onchange="subirLoteImagenesServidor(this)">
+                        <button onclick="document.getElementById('input-subir-lote').click()" style="background:#10b981; padding:10px 18px; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">📤 Subir Imágenes al Servidor</button>
+                        <button onclick="cargarGaleriaLocal()" style="background:#0284c7; padding:10px 18px; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">🔄 Actualizar Galería</button>
+                    </div>
                 </div>
                 <div id="galeria-contenedor" class="gallery-grid"></div>
             </div>
@@ -907,7 +1042,7 @@ HTML_INTERFACE = """
     <div id="modal-ia-progreso" class="modal-overlay">
         <div class="modal-box" style="width: 500px; text-align: center; border-top: 6px solid #2563eb;">
             <h3 style="color: #2563eb; border-bottom: none; margin-bottom: 10px;">🤖 Cerebro IA Trabajando...</h3>
-            <p style="font-size: 14px; color: #475569; margin-bottom: 20px;">Redactando descripciones y extrayendo fichas técnicas en lotes de 10. Por favor, no cierres esta ventana.</p>
+            <p style="font-size: 14px; color: #475569; margin-bottom: 20px;">Redactando descripciones y extrayendo fichas técnicas en lotes de 5. Por favor, no cierres esta ventana.</p>
             <div style="background: #e2e8f0; border-radius: 10px; height: 20px; width: 100%; overflow: hidden; margin-bottom: 10px; border: 1px solid #cbd5e1;">
                 <div id="ia-progreso-barra" style="background: linear-gradient(90deg, #3b82f6, #2563eb); width: 0%; height: 100%; transition: width 0.4s ease;"></div>
             </div>
@@ -1843,7 +1978,12 @@ HTML_INTERFACE = """
                                 : `<span class="account-badge badge-libre">${nomCuenta}: No Publicado</span>`;
                         }
 
-                        const precioFormateado = parseFloat(prod.Precio || 0).toFixed(2);
+                        const precioFloat = parseFloat(prod.Precio || 0);
+const precioFormateado = precioFloat.toFixed(2);
+let badgePrecio = "";
+if (precioFloat > 0 && precioFloat < 2.0) {
+    badgePrecio = `<div style="background:#fee2e2; border:1px solid #fca5a5; color:#b91c1c; padding:4px; font-size:10px; font-weight:bold; border-radius:4px; margin-top:4px;">⚠️ Precio Mínimo ($2)</div>`;
+}
                         let alertaImgHTML = prod.AlertaImagen ? `<div style="background:#fee2e2; border:1px solid #fca5a5; padding:6px; border-radius:6px; margin-bottom:6px; color:#b91c1c; font-size:11px; font-weight:bold;">⚠️ ${prod.AlertaImagen}</div>` : "";
 
                         nuevoHTML += `
@@ -1861,7 +2001,10 @@ HTML_INTERFACE = """
                                     <div style="margin-top:6px;">${badgesHTML}</div>
                                     <input type="hidden" id="desc-init-${idx}" value="${prod.DescripcionCustom || ''}">
                                 </td>
-                                <td><input type="number" id="pre-${idx}" value="${precioFormateado}" step="0.01"></td>
+                                <td>
+                                    <input type="number" id="pre-${idx}" value="${precioFormateado}" step="0.01">
+                                    ${badgePrecio}
+                                </td>
                                 <td><input type="number" id="stk-${idx}" value="${prod.Stock}"></td>
                                 <td>
                                     <select id="expo-${idx}" class="select-exposicion attr-select" style="margin-bottom:5px; font-weight:bold;">
@@ -1932,6 +2075,25 @@ HTML_INTERFACE = """
                 if (intervaloProgreso) clearInterval(intervaloProgreso);
                 document.getElementById('spinner-percentage').innerText = "100%";
                 setTimeout(() => { document.getElementById('loader-zona').style.display = 'none'; }, 400);
+            }
+        }
+
+        async function subirLoteImagenesServidor(inputElem) {
+            if(!inputElem.files || inputElem.files.length === 0) return;
+            const cont = document.getElementById('galeria-contenedor');
+            cont.innerHTML = "<div style='grid-column: 1 / -1; text-align: center; padding: 20px;'>Subiendo " + inputElem.files.length + " imágenes al servidor... Por favor espera.</div>";
+            const fd = new FormData();
+            for(let i=0; i<inputElem.files.length; i++){
+                fd.append("files", inputElem.files[i]);
+            }
+            try {
+                const res = await fetch('/api/subir-lote-imagenes', { method: 'POST', body: fd });
+                const data = await res.json();
+                alert(data.mensaje);
+                inputElem.value = "";
+                cargarGaleriaLocal();
+            } catch(e) {
+                alert("Error al subir las imágenes.");
             }
         }
 
@@ -2290,7 +2452,7 @@ HTML_INTERFACE = """
 
             if (!validChecks.length) return alert('No hay artículos válidos seleccionados para analizar.');
             
-            if (!confirm(`¿Iniciar análisis IA masivo para ${validChecks.length} artículos? El sistema procesará en lotes de 10 simultáneos.`)) return;
+            if (!confirm(`¿Iniciar análisis IA masivo para ${validChecks.length} artículos? El sistema procesará en lotes de 5 simultáneos.`)) return;
 
             // Reiniciar y mostrar la barra de progreso
             const totalItems = validChecks.length;
@@ -2305,8 +2467,8 @@ HTML_INTERFACE = """
             modalIA.style.display = 'flex';
             setTimeout(() => modalIA.classList.add('active'), 10);
 
-            // Procesar en lotes de 10 (Optimización Máxima Segura)
-            const TAMANO_LOTE = 10;
+            // Procesar en lotes de 5 (Optimización Máxima Segura)
+            const TAMANO_LOTE = 5;
             
             for (let i = 0; i < validChecks.length; i += TAMANO_LOTE) {
                 // Extraer el subgrupo de 5 artículos
@@ -2396,7 +2558,7 @@ HTML_INTERFACE = """
             setTimeout(() => modalIA.classList.add('active'), 10);
 
             let procesados = 0;
-            const TAMANO_LOTE = 10; 
+            const TAMANO_LOTE = 5; 
 
             for (let i = 0; i < indicesErrores.length; i += TAMANO_LOTE) {
                 const loteActual = indicesErrores.slice(i, i + TAMANO_LOTE);
@@ -2511,7 +2673,7 @@ def buscar_categorias_mlv(q: str):
 
 @app.post("/api/hojas-excel")
 def obtener_hojas_excel(file: UploadFile = File(...)):
-    temp_filename = f"temp_sheets_{file.filename}"
+    temp_filename = os.path.join(CARPETA_TEMP, f"temp_sheets_{uuid.uuid4().hex}_{file.filename}")
     with open(temp_filename, "wb") as buffer:
         buffer.write(file.file.read())
     
@@ -2535,7 +2697,7 @@ def obtener_hojas_excel(file: UploadFile = File(...)):
 
 @app.post("/api/columnas-excel")
 def endpoint_columnas_excel(file: UploadFile = File(...), hoja: str = Form("TODAS")):
-    temp_filename = f"temp_cols_{file.filename}"
+    temp_filename = os.path.join(CARPETA_TEMP, f"temp_cols_{uuid.uuid4().hex}_{file.filename}")
     with open(temp_filename, "wb") as buffer:
         buffer.write(file.file.read())
     
@@ -2548,7 +2710,7 @@ def endpoint_columnas_excel(file: UploadFile = File(...), hoja: str = Form("TODA
 
 @app.post("/api/vista-previa-excel")
 def endpoint_vista_previa_excel(file: UploadFile = File(...)):
-    temp_filename = f"temp_preview_{file.filename}"
+    temp_filename = os.path.join(CARPETA_TEMP, f"temp_preview_{file.filename}")
     with open(temp_filename, "wb") as buffer:
         buffer.write(file.file.read())
     
@@ -2594,6 +2756,32 @@ def endpoint_atributos_categoria(cat_id: str):
         pass
     return []
 
+from fastapi.responses import FileResponse
+from fastapi import HTTPException
+import urllib.parse
+
+@app.get("/api/imagen-local/{nombre}")
+def endpoint_imagen_local(nombre: str):
+    nombre_limpio = urllib.parse.unquote(nombre)
+    ruta = os.path.join(CARPETA_LOTE_IMAGENES, nombre_limpio)
+    if os.path.exists(ruta):
+        return FileResponse(ruta)
+    raise HTTPException(status_code=404, detail="Imagen no encontrada")
+
+@app.post("/api/subir-lote-imagenes")
+def api_subir_lote_imagenes(files: List[UploadFile] = File(...)):
+    if not os.path.exists(CARPETA_LOTE_IMAGENES):
+        os.makedirs(CARPETA_LOTE_IMAGENES)
+    guardadas = 0
+    for f in files:
+        if f.filename:
+            ruta = os.path.join(CARPETA_LOTE_IMAGENES, f.filename)
+            with open(ruta, "wb") as buffer:
+                buffer.write(f.file.read())
+            auto_reparar_imagen_ml(ruta)
+            guardadas += 1
+    return {"mensaje": f"Se subieron {guardadas} imágenes exitosamente al servidor."}
+
 @app.get("/api/galeria-local")
 def endpoint_galeria_local():
     if not os.path.exists(CARPETA_LOTE_IMAGENES):
@@ -2603,17 +2791,7 @@ def endpoint_galeria_local():
     for arc in sorted(os.listdir(CARPETA_LOTE_IMAGENES)):
         ext = arc.rsplit(".", 1)[-1].lower()
         if ext in ["jpg", "jpeg", "png", "webp"]:
-            ruta = os.path.join(CARPETA_LOTE_IMAGENES, arc)
-            try:
-                with open(ruta, "rb") as f:
-                    data = base64.b64encode(f.read()).decode("utf-8")
-                    mime = "image/jpeg" if ext in ["jpg", "jpeg"] else f"image/{ext}"
-                    lista_fotos.append({
-                        "nombre": arc,
-                        "b64": f"data:{mime};base64,{data}"
-                    })
-            except Exception:
-                continue
+            lista_fotos.append({"nombre": arc})
     return lista_fotos
 
 def sanitizar_atributo_por_tipo(valor_crudo, tipo_esperado, allowed_units, valid_values):
@@ -2688,6 +2866,21 @@ def sanitizar_atributo_por_tipo(valor_crudo, tipo_esperado, allowed_units, valid
     return val_str
 
 
+import time
+from functools import lru_cache
+
+@lru_cache(maxsize=128)
+def obtener_atributos_categoria_ml_cached(cat_id):
+    url_attr = f"{API_ML}/categories/{cat_id}/attributes"
+    for i in range(3):
+        try:
+            res = requests.get(url_attr, timeout=10)
+            if res.status_code == 200:
+                return res.json()
+        except:
+            time.sleep(1)
+    return None
+
 @app.post("/api/autollenar-atributos-ia")
 def autollenar_atributos_ia(
     titulo: str = Form(...),
@@ -2700,12 +2893,9 @@ def autollenar_atributos_ia(
         return {"error": "Falta configurar OPENROUTER_API_KEY en tu archivo .env"}
 
     try:
-        url_attr = f"{API_ML}/categories/{cat_id}/attributes"
-        res_ml = requests.get(url_attr, timeout=6)
-        if res_ml.status_code != 200:
-            return {"error": "No se pudieron obtener los atributos de Mercado Libre."}
-
-        attrs_ml = res_ml.json()
+        attrs_ml = obtener_atributos_categoria_ml_cached(cat_id)
+        if not attrs_ml:
+            return {"error": "No se pudieron obtener los atributos de Mercado Libre tras reintentos."}
         PROHIBIDOS = {"BRAND", "MODEL", "SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES", "MEASURE_UNIT_KEY", "INVOICE_PRODUCT_NAME", "SAT_KEY"}
         
         mapa_esquema = {}
@@ -2745,7 +2935,7 @@ def autollenar_atributos_ia(
                 lineas_instrucciones.append(f'  "{aid}": "..."  // ({a.get("name")}) [{marca_req}] -> {formato_nota}')
 
         texto_atributos = "\n".join(lineas_instrucciones[:40])
-        errores_historicos = cargar_errores_ia()
+        errores_historicos = cargar_errores_ia(cat_id)
         historial_texto = "\n".join([f"- {e}" for e in errores_historicos[-30:]]) if errores_historicos else "Ninguno."
 
         prompt = f"""Eres un catalogador técnico experto para Mercado Libre.
@@ -2772,7 +2962,7 @@ HISTORIAL DE RECHAZOS (APRENDE DE ESTOS FALLOS):
 {historial_texto}
 """
         if error_previo:
-            guardar_error_ia(error_previo)
+            guardar_error_ia(error_previo, cat_id)
             prompt += f"\n\n¡ALERTA DE CORRECCIÓN!: El intento anterior falló por este error de Mercado Libre: '{error_previo}'. Corrige el número o la unidad para solucionar esto."
 
         headers_or = {
@@ -2789,10 +2979,25 @@ HISTORIAL DE RECHAZOS (APRENDE DE ESTOS FALLOS):
         }
 
         url_openrouter = "https://openrouter.ai/api/v1/chat/completions"
-        res_or = requests.post(url_openrouter, headers=headers_or, json=payload_or, timeout=60)
         
-        if res_or.status_code != 200:
-            return {"error": f"Error API OpenRouter ({res_or.status_code})"}
+        max_reintentos = 6
+        res_or = None
+        for intento in range(max_reintentos):
+            try:
+                res_or = requests.post(url_openrouter, headers=headers_or, json=payload_or, timeout=90)
+                if res_or.status_code == 200:
+                    break
+                elif res_or.status_code in [400, 401, 403]:
+                    break
+                else:
+                    import time
+                    time.sleep((2 ** intento) + 2)
+            except Exception:
+                import time
+                time.sleep((2 ** intento) + 2)
+
+        if not res_or or res_or.status_code != 200:
+            return {"error": f"Fallo persistente IA tras {max_reintentos} intentos. Causa: ({res_or.status_code if res_or else 'Red / Timeout'})"}
 
         raw_text = res_or.json()["choices"][0]["message"]["content"].strip()
         
@@ -2903,8 +3108,18 @@ def api_sincronizar_memoria(cuenta: str = Form("TODAS")):
             memoria[nombre_c]['skus'].extend(nuevos_skus)
             total_nuevos += (len(nuevos_titulos) + len(nuevos_skus))
     
-    with open(ARCHIVO_MEMORIA, "w", encoding="utf-8") as f:
-        json.dump(memoria, f, ensure_ascii=False, indent=4)
+    with ia_memory_lock:
+        try:
+            conn = sqlite3.connect(ARCHIVO_MEMORIA_IA_DB)
+            cursor = conn.cursor()
+            for n_c, datos_nuevos in memoria.items():
+                for t in datos_nuevos.get("titulos", []):
+                    cursor.execute("INSERT OR IGNORE INTO memoria_erp (cuenta, tipo, valor) VALUES (?, 'titulos', ?)", (n_c, t))
+                for s in datos_nuevos.get("skus", []):
+                    cursor.execute("INSERT OR IGNORE INTO memoria_erp (cuenta, tipo, valor) VALUES (?, 'skus', ?)", (n_c, s))
+            conn.commit()
+            conn.close()
+        except Exception as e: print("Error sync db:", e)
         
     actualizar_progreso(100, "¡Sincronización completada!")
     PROGRESO_ACTUAL["activo"] = False
@@ -2959,7 +3174,7 @@ def previsualizar_archivo(
 ):
     actualizar_progreso(5, "Cargando archivo en memoria...")
     PROGRESO_ACTUAL["activo"] = True
-    temp_filename = f"temp_{file.filename}"
+    temp_filename = os.path.join(CARPETA_TEMP, f"temp_{uuid.uuid4().hex}_{file.filename}")
     with open(temp_filename, "wb") as buffer: 
         buffer.write(file.file.read())
 
@@ -3472,7 +3687,7 @@ def generar_catalogo_endpoint(
     col_stk: str = Form("")
 ):
     actualizar_progreso(10, "Cargando Excel...")
-    temp_filename = f"temp_catalogo_{file.filename}"
+    temp_filename = os.path.join(CARPETA_TEMP, f"temp_catalogo_{file.filename}")
     with open(temp_filename, "wb") as buffer:
         buffer.write(file.file.read())
         
@@ -3666,3 +3881,25 @@ def generar_catalogo_endpoint(
         "mensaje": f"Se generó el catálogo con {productos_validos} productos.",
         "ruta": ruta_guardado
     }
+
+if __name__ == "__main__":
+    import uvicorn
+    import threading
+    import webview
+    import time
+
+    def run_server():
+        # Ejecuta el servidor web en silencio (critical) para no crashear la app en modo noconsole
+        uvicorn.run(app, host="127.0.0.1", port=8080, log_level="critical")
+
+    t = threading.Thread(target=run_server)
+    t.daemon = True
+    t.start()
+
+    # Le damos 1 segundo al servidor para encender
+    time.sleep(1)
+
+    # Creamos una ventana de aplicacion nativa de Windows
+    webview.create_window("ERP Mercado Libre - MLV", "http://127.0.0.1:8080", width=1200, height=800)
+    webview.start()
+
