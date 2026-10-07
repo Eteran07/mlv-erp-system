@@ -171,6 +171,8 @@ def procesar_excel_heuristico(temp_filename, hoja_objetivo="TODAS", filtro_espec
         df_data.columns = headers_combinados
 
         col_sku, col_mod, col_tit, col_pre, col_mar, col_stk, col_cat = None, None, None, None, None, None, None
+        col_peso, col_alto, col_ancho, col_largo = None, None, None, None
+        col_peso, col_alto, col_ancho, col_largo = None, None, None, None
         
         if mapa_manual and isinstance(mapa_manual, dict):
             col_tit = buscar_col_manual(mapa_manual.get("tit"), df_data.columns)
@@ -197,6 +199,14 @@ def procesar_excel_heuristico(temp_filename, hoja_objetivo="TODAS", filtro_espec
                 col_stk = col
             elif not col_cat and any(k in cl for k in ['categoria', 'categoría', 'rubro', 'línea', 'linea']):
                 col_cat = col
+            elif not col_peso and any(k in cl for k in ['peso', 'weight']):
+                col_peso = col
+            elif not col_alto and any(k in cl for k in ['alto', 'altura', 'height']):
+                col_alto = col
+            elif not col_ancho and any(k in cl for k in ['ancho', 'anchura', 'width']):
+                col_ancho = col
+            elif not col_largo and any(k in cl for k in ['largo', 'profundidad', 'length']):
+                col_largo = col
 
         categoria_banda_actual = "GENERAL"
 
@@ -242,6 +252,15 @@ def procesar_excel_heuristico(temp_filename, hoja_objetivo="TODAS", filtro_espec
             cat_linea = str(row[col_cat]).strip() if col_cat and pd.notna(row[col_cat]) else categoria_banda_actual
             if cat_linea.lower() == "nan" or not cat_linea: cat_linea = categoria_banda_actual
 
+            p_peso = str(row[col_peso]).strip() if col_peso and pd.notna(row[col_peso]) else None
+            if p_peso and (p_peso.lower() == "nan" or not p_peso): p_peso = None
+            p_alto = str(row[col_alto]).strip() if col_alto and pd.notna(row[col_alto]) else None
+            if p_alto and (p_alto.lower() == "nan" or not p_alto): p_alto = None
+            p_ancho = str(row[col_ancho]).strip() if col_ancho and pd.notna(row[col_ancho]) else None
+            if p_ancho and (p_ancho.lower() == "nan" or not p_ancho): p_ancho = None
+            p_largo = str(row[col_largo]).strip() if col_largo and pd.notna(row[col_largo]) else None
+            if p_largo and (p_largo.lower() == "nan" or not p_largo): p_largo = None
+
             if filtro_especialidad != "TODO":
                 texto_analisis = f"{tit_val} {cat_linea}".lower()
                 if filtro_especialidad == "COMPUTACION" and not any(k in texto_analisis for k in ["laptop", "aspire", "notebook", "pc", "core", "ryzen", "portátil", "portatil", "intel", "amd"]): continue
@@ -257,7 +276,11 @@ def procesar_excel_heuristico(temp_filename, hoja_objetivo="TODAS", filtro_espec
                 "Stock": stk_val,
                 "Marca": mar_val,
                 "CategoriaOrigen": cat_linea,
-                "Hoja": nom_hoja
+                "Hoja": nom_hoja,
+                "Peso": p_peso,
+                "Alto": p_alto,
+                "Ancho": p_ancho,
+                "Largo": p_largo
             })
 
     return filas_extraidas

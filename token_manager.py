@@ -1,6 +1,7 @@
 import os
 import glob
 import json
+import time
 import requests
 
 def listar_archivos_token():
@@ -11,7 +12,7 @@ def obtener_nombre_cuenta(archivo_token):
     nombre = archivo_token.replace("token_", "").replace("tokens_", "").replace(".json", "").upper()
     return nombre if nombre else "PRINCIPAL"
 
-def renovar_y_guardar_token(archivo_token, datos_json):
+def renovar_y_guardar_token(archivo_token, datos_json, max_intentos=3):
     client_id = os.getenv("ML_APP_ID") or os.getenv("ML_CLIENT_ID")
     client_secret = os.getenv("ML_CLIENT_SECRET")
     refresh_token = datos_json.get("refresh_token")
@@ -30,17 +31,26 @@ def renovar_y_guardar_token(archivo_token, datos_json):
     }
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
-    try:
-        res = requests.post(url_oauth, data=payload, headers=headers)
-        if res.status_code == 200:
-            nuevos_datos = res.json()
-            with open(archivo_token, "w") as f:
-                json.dump(nuevos_datos, f, indent=4)
-            return nuevos_datos.get("access_token"), "OK"
-        else:
-            return datos_json.get("access_token"), f"RECHAZO_ML ({res.status_code}): {res.text}"
-    except Exception as e:
-        return datos_json.get("access_token"), f"EXCEPCIÓN_RED: {str(e)}"
+    for intento in range(max_intentos):
+        try:
+            res = requests.post(url_oauth, data=payload, headers=headers)
+            if res.status_code == 200:
+                nuevos_datos = res.json()
+                with open(archivo_token, "w") as f:
+                    json.dump(nuevos_datos, f, indent=4)
+                return nuevos_datos.get("access_token"), "OK"
+            elif res.status_code == 429:
+                # Rate limit: esperar y reintentar
+                espera = 3 * (intento + 1)  # 3s, 6s, 9s
+                print(f"[Token Manager] 429 Rate Limit en '{archivo_token}'. Esperando {espera}s (intento {intento+1}/{max_intentos})...")
+                time.sleep(espera)
+                continue
+            else:
+                return datos_json.get("access_token"), f"RECHAZO_ML ({res.status_code}): {res.text}"
+        except Exception as e:
+            return datos_json.get("access_token"), f"EXCEPCIÓN_RED: {str(e)}"
+
+    return datos_json.get("access_token"), "ERROR: Se agotaron los reintentos por Rate Limit (429). Intenta de nuevo en 1 minuto."
 
 def obtener_token(archivo_token):
     try:
