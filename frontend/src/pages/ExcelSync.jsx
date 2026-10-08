@@ -38,14 +38,16 @@ function ProductRow({ p, idx, selected, onToggle, rowData, onRowChange, onAIFill
     setIaStatus(null);
     const fd = new FormData();
     fd.append('titulo', rowData.titulo ?? p.Titulo);
-    fd.append('cat_id', p.Categoria_ID || '');
+    fd.append('cat_id', (rowData.cat_id ?? p.Categoria_ID) || '');
     fd.append('sku', rowData.sku ?? p.SKU ?? '');
+    if (rowData.errorML) fd.append('error_previo', rowData.errorML);
     try {
       const res = await fetch('/api/autollenar-atributos-ia', { method: 'POST', body: fd });
       const data = await res.json();
       if (data.atributos || data.descripcion) {
-        onAIFill(idx, data);
+        onAIFill(idx, data, p.DescripcionFinal || '');
         setIaStatus('ok');
+        if (rowData.errorML) onRowChange(idx, 'errorML', null);
       } else {
         setIaStatus('error');
       }
@@ -99,11 +101,11 @@ function ProductRow({ p, idx, selected, onToggle, rowData, onRowChange, onAIFill
           />
           <div className="flex flex-wrap gap-1 mt-1 items-center">
             <span 
-              className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-mono cursor-pointer hover:bg-slate-200 border border-slate-200"
+              className="text-[10px] bg-blue-50 text-blue-700 px-2 py-0.5 rounded font-bold cursor-pointer hover:bg-blue-100 border border-blue-200 transition-colors flex items-center gap-1"
               onClick={() => onOpenCatSearch(idx)}
               title="Click para buscar y cambiar categoria manualmente"
             >
-              {rowData.cat_nombre ?? p.CategoriaNombre ?? 'Sin categoria'} {rowData.cat_id ? `(${rowData.cat_id})` : ''} ✏️
+              🏷️ {rowData.cat_nombre ?? p.CategoriaNombre ?? 'Sin categoria'} {rowData.cat_id ? `(${rowData.cat_id})` : ''} <span className="opacity-70">(Cambiar)</span>
             </span>
             <span className="text-[10px] text-slate-400 font-mono">
               SKU: {p.SKU || 'N/A'} | Mod: {p.Modelo || 'N/A'}
@@ -116,6 +118,17 @@ function ProductRow({ p, idx, selected, onToggle, rowData, onRowChange, onAIFill
             {iaStatus === 'ok'    && <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-bold">IA Completado</span>}
             {iaStatus === 'error' && <span className="text-[10px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold">Error IA</span>}
           </div>
+          {rowData.errorML && (
+            <div className="mt-2 text-[11px] bg-red-50 text-red-600 p-2 rounded border border-red-200 flex items-start gap-2">
+              <AlertCircle size={14} className="shrink-0 mt-0.5"/>
+              <div className="flex-1">
+                <strong>Error de Publicación:</strong> {rowData.errorML}
+              </div>
+              <button onClick={handleAI} disabled={iaLoading} className="bg-red-100 hover:bg-red-200 text-red-700 px-2 py-1 rounded font-bold shrink-0">
+                {iaLoading ? 'Corrigiendo...' : 'Corregir con IA'}
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Precio */}
@@ -212,7 +225,7 @@ function ProductRow({ p, idx, selected, onToggle, rowData, onRowChange, onAIFill
                     <p className="text-sm text-slate-500 mb-3">Así se verá el texto final publicado en Mercado Libre, incluyendo la ficha técnica ensamblada por el ERP.</p>
                     <textarea
                       rows={20}
-                      value={rowData.descripcion ?? ''}
+                      value={rowData.descripcion ?? p.DescripcionFinal ?? ''}
                       onChange={e => onRowChange(idx, 'descripcion', e.target.value)}
                       placeholder="La IA puede generar esta descripcion automaticamente. Tambien puedes editarla manualmente."
                       className="w-full border border-slate-300 rounded-lg p-4 text-sm focus:border-blue-500 focus:outline-none bg-white font-mono shadow-inner resize-none"
@@ -321,17 +334,7 @@ function AttributesModal({ isOpen, onClose, catId, titulo, rowData, p, onSave })
       .then(r => r.json())
       .then(d => { 
         setAttrs(d); 
-        // Autofill N/A for mandatory string/string_list attributes that are missing
-        const updatedVals = { ...init };
-        d.forEach(a => {
-            if (a.tags?.includes('required') && (a.value_type === 'string' || a.value_type === 'string_list')) {
-                // If it's empty, and not an options-only field
-                if (!updatedVals[a.id] && (!a.values || a.values.length === 0)) {
-                    updatedVals[a.id] = "N/A";
-                }
-            }
-        });
-        setLocalVals(updatedVals);
+        setLocalVals(init);
         setLoading(false); 
       })
       .catch(() => setLoading(false));
@@ -458,6 +461,7 @@ export default function ExcelSync() {
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [manualCatSearch, setManualCatSearch] = useState({ isOpen: false, idx: null, query: '', results: [], loading: false });
+  const [globalCatSearch, setGlobalCatSearch] = useState({ query: '', results: [], loading: false });
   const [viewMode, setViewMode] = useState('categorias');
   const [rowData, setRowData] = useState({});
   const [currentPage, setCurrentPage] = useState(1);
@@ -505,15 +509,20 @@ export default function ExcelSync() {
     }
   }, []);
 
-  const onAIFill = useCallback((idx, data) => {
+  const onAIFill = useCallback((idx, data, initialDesc = '') => {
     setRowData(prev => {
-      const existingDesc = prev[idx]?.descripcion || '';
+      let baseDesc = prev[idx]?.descripcion;
+      if (baseDesc === undefined) {
+        baseDesc = initialDesc;
+      }
+      const existingDesc = baseDesc || '';
+      
       let newDesc = existingDesc;
       if (data.descripcion) {
          if (newDesc.includes('CARACTERISTICAS TECNICAS')) {
             newDesc = newDesc.replace('========================================\nCARACTERISTICAS TECNICAS\n========================================\n\n', '========================================\nCARACTERISTICAS TECNICAS\n========================================\n\n' + data.descripcion + '\n\n');
          } else {
-            newDesc += '\n' + data.descripcion;
+            newDesc = (newDesc.trim() ? newDesc + '\n\n' : '') + data.descripcion;
          }
       }
       return {
@@ -613,7 +622,7 @@ export default function ExcelSync() {
         try {
           const res = await fetch('/api/autollenar-atributos-ia', { method: 'POST', body: fd });
           const data = await res.json();
-          if (data.atributos || data.descripcion) onAIFill(idx, data);
+          if (data.atributos || data.descripcion) onAIFill(idx, data, p.DescripcionFinal || '');
         } catch {}
         setIaProgress(prev => ({ ...prev, done: prev.done + 1 }));
       }));
@@ -771,20 +780,43 @@ De 8:30am A 5:30pm`;
     customConfirm(`Publicar ${selectedRows.size} articulos en MercadoLibre?`, async () => {
     setIsPublishing(true); setStep(4);
     setActiveTaskName('Publicando Lote en MercadoLibre...'); setPublishResult(null);
-    const productosFinales = Array.from(selectedRows).map(originalIdx => {
+    const fileToBase64 = (file) => new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => resolve(null);
+    });
+
+    const productosFinales = await Promise.all(Array.from(selectedRows).map(async originalIdx => {
         const p = previewData.productos[originalIdx];
         const rd = rowData[originalIdx] || {};
+
+        let ImagenesB64 = [];
+        if (rd.localImages) {
+           for (let i = 0; i < rd.localImages.length; i++) {
+               const img = rd.localImages[i];
+               if (img.startsWith('data:image')) {
+                   ImagenesB64.push(img);
+               } else if (rd.imageFiles && rd.imageFiles[i]) {
+                   const b64 = await fileToBase64(rd.imageFiles[i]);
+                   if (b64) ImagenesB64.push(b64);
+               }
+           }
+        }
+
         return {
           ...p,
+          idx:         originalIdx,
           Titulo:      rd.titulo      ?? p.Titulo,
           Precio:      rd.precio      ?? p.Precio,
           Stock:       rd.stock       ?? p.Stock,
           Exposicion:  rd.exposicion  ?? 'bronze',
           Envio:       rd.envio       ?? 'me2_free',
-          Descripcion: rd.descripcion ?? p.DescripcionCustom ?? '',
-          AtributosIA: rd.aiAtributos ?? {},
+          DescripcionCustom: rd.descripcion ?? p.DescripcionCustom ?? '',
+          AtributosDinamicos: rd.aiAtributos ?? p.AtributosDinamicos ?? {},
+          ImagenesB64: ImagenesB64.length > 0 ? ImagenesB64 : (p.ImagenesB64 || [])
         };
-      });
+      }));
     const iv = startProgressTracking();
     try {
       const d = await fetch(`/publicar-lote?cuenta=${encodeURIComponent(cuentaActiva)}`, {
@@ -798,6 +830,36 @@ De 8:30am A 5:30pm`;
     });
   };
 
+  const handleReturnToStep3 = () => {
+    if (publishResult && publishResult.errores_idx) {
+      // Remover los que se publicaron con exito de selectedRows
+      const failedIndices = Object.keys(publishResult.errores_idx).map(String);
+      const newSelected = new Set(failedIndices);
+      
+      // Update previewData to mark successful ones so they are hidden
+      setPreviewData(prev => {
+        if (!prev || !prev.productos) return prev;
+        const newProductos = [...prev.productos];
+        const successfulIndices = Array.from(selectedRows).filter(idx => !failedIndices.includes(String(idx)));
+        successfulIndices.forEach(idx => {
+           newProductos[idx] = { ...newProductos[idx], publishedSuccessfully: true };
+        });
+        return { ...prev, productos: newProductos };
+      });
+
+      setSelectedRows(newSelected);
+      
+      // Inject error messages into rowData so they can be sent to AI next time
+      const newRowData = { ...rowData };
+      failedIndices.forEach(idx => {
+         newRowData[idx] = { ...newRowData[idx], errorML: publishResult.errores_idx[idx] };
+      });
+      setRowData(newRowData);
+    }
+    setPublishResult(null);
+    setStep(3);
+  };
+
   // Computed helpers
   const activeRawSheet = rawPreview.find(s => s.nombre === hojaActiva) || rawPreview[0];
   const rawRows   = activeRawSheet?.filas || [];
@@ -805,6 +867,7 @@ De 8:30am A 5:30pm`;
   const rawDataRows = rawRows.slice(1, 11);
 
   const filteredItems = (previewData?.productos || []).map((p, idx) => ({ p, idx })).filter(item => {
+    if (item.p.publishedSuccessfully) return false;
     if (!showPublished && item.p.EstadoCuentas) {
        if (cuentaActiva === 'TODAS') {
            const allExist = Object.values(item.p.EstadoCuentas).every(s => s === 'EXISTE');
@@ -867,17 +930,59 @@ De 8:30am A 5:30pm`;
                 🌐 CARGAR TODO EL INVENTARIO <span className="font-normal opacity-70 ml-2">(Sin filtro de categoría)</span>
               </button>
 
-              <div className="grid grid-cols-2 gap-4">
-                {categorias.map(cat => (
-                  <button
-                    key={cat.id}
-                    onClick={() => setConfig(c => ({ ...c, categoria_filtro: cat.id }))}
-                    className={`py-4 px-4 rounded-lg font-bold text-sm text-left border-2 flex items-center transition-all ${config.categoria_filtro === cat.id ? 'border-[#0284c7] bg-[#e0f2fe] text-[#0284c7]' : 'border-slate-200 bg-white hover:border-[#0284c7] hover:text-[#0284c7]'}`}
-                  >
-                    📌 {cat.name} <span className="font-normal opacity-60 ml-2">({cat.id})</span>
-                  </button>
-                ))}
+              <div className="mb-4">
+                <input 
+                  type="text" 
+                  value={globalCatSearch.query}
+                  onChange={(e) => setGlobalCatSearch({ ...globalCatSearch, query: e.target.value })}
+                  placeholder="🔍 Buscar categoría por título (Ej: Laptops)... Presiona Enter"
+                  className="w-full p-3 border border-slate-300 rounded focus:border-[#0284c7] outline-none font-medium"
+                  onKeyDown={async (e) => {
+                    if (e.key === 'Enter' && globalCatSearch.query.trim()) {
+                      setGlobalCatSearch(prev => ({ ...prev, loading: true, results: [] }));
+                      try {
+                        const res = await fetch(`/api/buscar-categorias-mlv?q=${encodeURIComponent(globalCatSearch.query.trim())}`);
+                        if (res.ok) {
+                          const data = await res.json();
+                          setGlobalCatSearch(prev => ({ ...prev, loading: false, results: data }));
+                        } else {
+                          setGlobalCatSearch(prev => ({ ...prev, loading: false }));
+                        }
+                      } catch {
+                        setGlobalCatSearch(prev => ({ ...prev, loading: false }));
+                      }
+                    }
+                  }}
+                />
               </div>
+
+              {globalCatSearch.loading ? (
+                <div className="text-center py-4 text-slate-500 font-bold"><Loader2 size={24} className="animate-spin mx-auto mb-2"/> Buscando categorías...</div>
+              ) : globalCatSearch.results.length > 0 ? (
+                <div className="grid grid-cols-2 gap-4">
+                  {globalCatSearch.results.map(cat => (
+                    <button
+                      key={cat.id}
+                      onClick={() => setConfig(c => ({ ...c, categoria_filtro: cat.id }))}
+                      className={`py-3 px-4 rounded-lg font-bold text-sm text-left border-2 flex items-center transition-all ${config.categoria_filtro === cat.id ? 'border-[#0284c7] bg-[#e0f2fe] text-[#0284c7]' : 'border-slate-200 bg-white hover:border-[#0284c7] hover:text-[#0284c7]'}`}
+                    >
+                      🔍 {cat.name} <span className="font-normal opacity-60 ml-2">({cat.id})</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-4">
+                  {categorias.map(cat => (
+                    <button
+                      key={cat.id}
+                      onClick={() => setConfig(c => ({ ...c, categoria_filtro: cat.id }))}
+                      className={`py-4 px-4 rounded-lg font-bold text-sm text-left border-2 flex items-center transition-all ${config.categoria_filtro === cat.id ? 'border-[#0284c7] bg-[#e0f2fe] text-[#0284c7]' : 'border-slate-200 bg-white hover:border-[#0284c7] hover:text-[#0284c7]'}`}
+                    >
+                      📌 {cat.name} <span className="font-normal opacity-60 ml-2">({cat.id})</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="p-5 border-t border-slate-200 bg-white flex justify-center gap-4">
               <button onClick={() => setShowCategoryModal(false)} className="px-6 py-2.5 bg-slate-500 hover:bg-slate-600 text-white font-bold rounded-lg shadow-sm">
@@ -1137,38 +1242,6 @@ De 8:30am A 5:30pm`;
                       </div>
                     </div>
                   </div>
-
-                  {/* Vista Previa en Vivo Tabla */}
-                  {rawDataRows.length > 0 && (
-                    <div className="mt-6 border border-slate-200 rounded-lg overflow-hidden bg-white">
-                      <div className="bg-slate-100 px-4 py-2 border-b border-slate-200 flex items-center gap-2">
-                        <Table size={16} className="text-slate-500" />
-                        <h4 className="font-bold text-sm text-slate-700">Vista Previa del Excel — Hoja: {hojaActiva}</h4>
-                      </div>
-                      <div className="overflow-x-auto max-h-[300px]">
-                        <table className="w-full text-xs text-left">
-                          <thead className="bg-slate-50 sticky top-0">
-                            <tr>
-                              <th className="px-3 py-2 border-b text-slate-500 font-bold w-12">#</th>
-                              {rawHeaders.map((h, i) => (
-                                <th key={i} className="px-3 py-2 border-b font-bold text-[#0284c7] whitespace-nowrap">{h}</th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {rawDataRows.map((row, rIdx) => (
-                              <tr key={rIdx} className="hover:bg-slate-50 border-b last:border-0">
-                                <td className="px-3 py-2 text-slate-500 font-bold bg-slate-50">Fila {rIdx + 2}</td>
-                                {rawHeaders.map((h, i) => (
-                                  <td key={i} className="px-3 py-2 whitespace-nowrap">{row[h] || ''}</td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  )}
                 </div>
               )}
             </div>
@@ -1380,14 +1453,41 @@ De 8:30am A 5:30pm`;
                       return <div key={i} className={cls}>{log}</div>;
                     })}
                   </div>
-                  <div className="flex justify-center">
-                    <button onClick={() => { setStep(1); setFile(null); setPreviewData(null); setRowData({}); }}
+                  <div className="flex justify-center gap-4">
+                    {previewData && (
+                      <button onClick={handleReturnToStep3}
+                        className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-2.5 rounded-lg font-bold transition-colors">
+                        Volver a la tabla
+                      </button>
+                    )}
+                    <button onClick={() => { 
+                      setStep(1); 
+                      setFile(null); 
+                      setPreviewData(null); 
+                      setRowData({}); 
+                      setRawPreview([]);
+                      setHojas([]);
+                      setColumnas([]);
+                    }}
                       className="bg-slate-200 hover:bg-slate-300 text-slate-800 px-8 py-2.5 rounded-lg font-bold transition-colors">
-                      Volver al inicio
+                      Finalizar y Volver al inicio
                     </button>
                   </div>
                 </div>
-              ) : null}
+              ) : (
+                <div className="max-w-md mx-auto space-y-4">
+                  <div className="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-6">
+                    <AlertCircle size={32} />
+                  </div>
+                  <h2 className="text-xl font-bold text-slate-800">Error en la publicación</h2>
+                  <p className="text-slate-600">Hubo un problema de conexión con el servidor. Puedes volver a intentarlo.</p>
+                  <div className="flex justify-center mt-6">
+                    <button onClick={() => setStep(3)} className="bg-slate-200 hover:bg-slate-300 text-slate-800 px-8 py-2.5 rounded-lg font-bold transition-colors">
+                      Volver a la tabla
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1422,6 +1522,7 @@ De 8:30am A 5:30pm`;
     </div>
   );
 }
+
 
 
 

@@ -71,6 +71,7 @@ def cargar_errores_ia(cat_id=""):
         except: return []
 
 def guardar_error_ia(nuevo_error, cat_id="GLOBAL"):
+    inicializar_bd_ia()
     with ia_memory_lock:
         try:
             conn = sqlite3.connect(ARCHIVO_MEMORIA_IA_DB)
@@ -200,6 +201,7 @@ De 8:30am A 5:30pm
 """
 
 def cargar_memoria():
+    inicializar_bd_ia()
     mem = {}
     with ia_memory_lock:
         try:
@@ -215,6 +217,7 @@ def cargar_memoria():
     return mem
 
 def guardar_en_memoria(cuenta, titulo, sku):
+    inicializar_bd_ia()
     with ia_memory_lock:
         try:
             conn = sqlite3.connect(ARCHIVO_MEMORIA_IA_DB)
@@ -376,8 +379,10 @@ def analizar_error_ml(respuesta):
                 attr_name = attr_match.group(1) if attr_match else "Desconocido"
                 errores_procesados.add(f"📏 Falta la unidad de medida o el número es inválido en el atributo: [{attr_name}].")
             elif "is required and was omitted" in msg or "are required" in msg:
-                attr_match = re.search(r'\[([A-Z0-9_]+)\]', msg)
-                attr_name = attr_match.group(1) if attr_match else "Desconocido"
+                attr_match = re.search(r'\[([^\]]+)\]', msg)
+                if not attr_match:
+                    attr_match = re.search(r'(?i)attribute(?:s)?\s+([A-Z0-9_,\s]+)\s+(?:are|is)', msg)
+                attr_name = attr_match.group(1).strip() if attr_match else "Desconocido"
                 errores_procesados.add(f"⚠️ El atributo [{attr_name}] es OBLIGATORIO y está vacío.")
             elif "is not valid, item values" in msg:
                 attr_match = re.search(r'Attribute (?:\[)?([A-Z0-9_]+)(?:\])?', msg)
@@ -394,16 +399,21 @@ def analizar_error_ml(respuesta):
         return f"Error HTTP {respuesta.status_code}: Conexión rechazada por Mercado Libre."
 
 def construir_atributos_dinamicos_dict(prod, attr_adicionales, headers):
+    # Extract overrides from attr_adicionales if they exist
+    marca = attr_adicionales.get("BRAND", prod.get("Marca", "Generico"))
+    modelo = attr_adicionales.get("MODEL", prod.get("Modelo", "Universal"))
+    
     lista = [
-        {"id": "BRAND", "value_name": prod.get("Marca", "Generico")},
-        {"id": "MODEL", "value_name": prod.get("Modelo", "Universal")}
+        {"id": "BRAND", "value_name": marca},
+        {"id": "MODEL", "value_name": modelo}
     ]
-    sku = str(prod.get("SKU", "")).strip()
+    
+    sku = attr_adicionales.get("SELLER_SKU", str(prod.get("SKU", "")).strip())
     if sku and sku.lower() != "nan":
         lista.append({"id": "SELLER_SKU", "value_name": sku})
         lista.append({"id": "PART_NUMBER", "value_name": sku})
 
-    gtin_val = str(prod.get("GTIN", "OMITIR")).strip()
+    gtin_val = attr_adicionales.get("GTIN", str(prod.get("GTIN", "OMITIR")).strip())
     if gtin_val != "OMITIR" and gtin_val and gtin_val.lower() != "nan":
         gtin_solo_numeros = re.sub(r'\D', '', gtin_val)
         if len(gtin_solo_numeros) >= 8:
@@ -4392,11 +4402,13 @@ Tu tarea es devolver ÚNICAMENTE un objeto JSON válido. NO devuelvas texto extr
 
 REGLAS ESTRICTAS DE CLAVES JSON Y DESCRIPCION:
 - Usa EXACTAMENTE las claves en mayúsculas de la izquierda (Ej: usa "DISPLAY_SIZE", NO "Tamaño de la pantalla").
-- La primera clave debe ser "DESCRIPCION_COMERCIAL". Su valor DEBE ser un párrafo extenso, detallado y persuasivo que explique las especificaciones técnicas, beneficios y posibles casos de uso. NO seas superficial, agrega valor real sobre el producto.
+- La primera clave debe ser "DESCRIPCION_COMERCIAL". Su valor DEBE ser un texto sumamente extenso, rico en detalles técnicos y comerciales. Debes agregar mucha más información útil sobre el producto (características clave, casos de uso, compatibilidad, ventajas). Escribe al menos 3 a 4 párrafos bien estructurados, utilizando saltos de línea (\n), viñetas y formato profesional. Las descripciones superficiales están prohibidas.
 
 REGLAS DE VALORES (EXTREMADAMENTE IMPORTANTES):
-- ATRIBUTOS [OBLIGATORIO]: ¡SI O SI DEBEN SER LLENADOS! NUNCA uses "N/A", "No aplica", ni los dejes vacíos a menos que sea la única opción. Si la información (como BRAND o MODEL) no está explícita, haz una inferencia profesional basada en el título, o extrae la marca principal.
-- TIPO 'number_unit': No basta con escribir cualquier símbolo. Debes REVISAR LA LISTA DE [Unidades válidas] del esquema para ese atributo y elegir EXACTAMENTE uno de esos símbolos oficiales. Devuelve el número seguido de un espacio y el símbolo oficial (Ej: "15.6 \"", "1 TB", "8 GB"). Si te equivocas de símbolo, Mercado Libre rechazará la publicación.
+- CONSISTENCIA TECNICA Y CRUCES DE MARCA: Si seleccionas BRAND AMD, no uses LINE Core i7, usa Ryzen. Manten coherencia estricta.
+- ATRIBUTOS OBLIGATORIOS: ¡SÍ O SÍ DEBEN SER LLENADOS! ESTÁ TERMINANTEMENTE PROHIBIDO usar "N/A", "No aplica" o dejarlos vacíos. Si la información no está explícita, debes DEDUCIRLA de forma inteligente y realista a partir del Título o el SKU. Por ejemplo, la Marca (BRAND) y el Modelo (MODEL) siempre se pueden extraer o inferir del título. ¡Todo atributo marcado como OBLIGATORIO requiere un valor válido real!
+- ATRIBUTOS OPCIONALES: Llénelos siempre que sea posible aportando valor. Si el artículo pide un número de serie, código universal, o algo sumamente específico que no se puede deducir, usa valores por defecto como "Sin serial", "No aplica" o marca que no lo tiene.
+- TIPO 'number_unit': ¡CUIDADO! No basta con escribir el número y cualquier símbolo. Debes OBLIGATORIAMENTE revisar la lista de [Unidades válidas] proporcionada en el esquema para ese atributo y elegir EXACTAMENTE uno de esos símbolos oficiales de Mercado Libre. El formato correcto es el número, un espacio y el símbolo oficial de la lista (Ej: "15.6 \"", "1 TB", "8 GB"). Si te equivocas de símbolo o lo omites, el sistema fallará.
 
 ESQUEMA DE ATRIBUTOS PERMITIDOS (Las claves exactas de tu JSON deben ser estas):
 {{
@@ -4455,8 +4467,11 @@ HISTORIAL DE RECHAZOS (APRENDE DE ESTOS FALLOS):
         except Exception:
             return {"error": "El formato devuelto por la IA estaba corrupto."}
 
-        descripcion_ia = datos_ia.pop("DESCRIPCION_COMERCIAL", "")
-        
+        descripcion_ia = ""
+        for k in list(datos_ia.keys()):
+            if k.upper() in ["DESCRIPCION_COMERCIAL", "DESCRIPCIÓN_COMERCIAL", "DESCRIPCION", "DESCRIPTION"]:
+                descripcion_ia = datos_ia.pop(k, "")
+                break
         # Plantillas de la tienda
         bloque_sup = "SOMOS TIENDA FÍSICA, Empresa Mayorista Líder en el Mercado de la Computación Producto 100% de calidad\n"
         bloque_inf = """
@@ -4544,58 +4559,51 @@ def api_sincronizar_memoria(cuenta: str = Form("TODAS")):
     PROGRESO_ACTUAL["porcentaje"] = 0
     PROGRESO_ACTUAL["mensaje"] = "Iniciando sincronización..."
     
-    # 🟢 AHORA SÍ FILTRA POR LA CUENTA QUE ENVÍA EL NAVEGADOR
     if cuenta == "TODAS":
         archivos = listar_archivos_token()
     else:
         archivos = [cuenta]
         
-    memoria = cargar_memoria()
-    total_nuevos = 0
-    
-    for arch in archivos:
-        nombre_c = obtener_nombre_cuenta(arch)
-        token = obtener_token(arch)
-        if not token: 
-            continue
-            
-        # 🟢 RESETEA EL PORCENTAJE A 0 CUANDO INICIA UNA CUENTA NUEVA
-        actualizar_progreso(0, f"Preparando cuenta: {nombre_c}...")
-        
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        inv_ml = obtener_inventario_ml(headers, nombre_c)
-        
-        if nombre_c not in memoria:
-            memoria[nombre_c] = {'titulos': [], 'skus': []}
-            
-        titulos_existentes = set(memoria[nombre_c].get('titulos', []))
-        skus_existentes = set(memoria[nombre_c].get('skus', []))
-        
-        nuevos_titulos = list(inv_ml['titulos'] - titulos_existentes)
-        nuevos_skus = list(inv_ml['skus'] - skus_existentes)
-        
-        if nuevos_titulos or nuevos_skus:
-            memoria[nombre_c]['titulos'].extend(nuevos_titulos)
-            memoria[nombre_c]['skus'].extend(nuevos_skus)
-            total_nuevos += (len(nuevos_titulos) + len(nuevos_skus))
+    total_sincronizados = 0
     
     with ia_memory_lock:
         try:
             conn = sqlite3.connect(ARCHIVO_MEMORIA_IA_DB)
             cursor = conn.cursor()
-            for n_c, datos_nuevos in memoria.items():
-                for t in datos_nuevos.get("titulos", []):
-                    cursor.execute("INSERT OR IGNORE INTO memoria_erp (cuenta, tipo, valor) VALUES (?, 'titulos', ?)", (n_c, t))
-                for s in datos_nuevos.get("skus", []):
-                    cursor.execute("INSERT OR IGNORE INTO memoria_erp (cuenta, tipo, valor) VALUES (?, 'skus', ?)", (n_c, s))
+            
+            for arch in archivos:
+                nombre_c = obtener_nombre_cuenta(arch)
+                token = obtener_token(arch)
+                if not token: 
+                    continue
+                    
+                actualizar_progreso(0, f"Sincronizando inventario de: {nombre_c}...")
+                
+                headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                inv_ml = obtener_inventario_ml(headers, nombre_c)
+                
+                # Borramos la memoria local antigua de esta cuenta para que sea un espejo exacto de ML
+                cursor.execute("DELETE FROM memoria_erp WHERE cuenta = ?", (nombre_c,))
+                
+                nuevos_a_insertar = []
+                for t in inv_ml.get('titulos', []):
+                    nuevos_a_insertar.append((nombre_c, 'titulos', t))
+                for s in inv_ml.get('skus', []):
+                    nuevos_a_insertar.append((nombre_c, 'skus', s))
+                    
+                if nuevos_a_insertar:
+                    cursor.executemany("INSERT INTO memoria_erp (cuenta, tipo, valor) VALUES (?, ?, ?)", nuevos_a_insertar)
+                    total_sincronizados += len(nuevos_a_insertar)
+                    
             conn.commit()
             conn.close()
-        except Exception as e: print("Error sync db:", e)
+        except Exception as e:
+            print("Error sync db:", e)
         
     actualizar_progreso(100, "¡Sincronización completada!")
     PROGRESO_ACTUAL["activo"] = False
     
-    return {"mensaje": f"Sincronización finalizada. Se guardaron {total_nuevos} datos nuevos en la memoria local."}
+    return {"mensaje": f"Sincronización finalizada. Memoria actualizada con {total_sincronizados} registros."}
 
 
 # ------ AQUÍ PEGAS EL PUNTO 4 ------
@@ -5036,8 +5044,10 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                 shipping_payload = {"mode": "custom", "free_shipping": True, "costs": [{"description": "Envío Gratis a Nivel Nacional", "cost": 0}]}
             elif modo_envio == "me2_buyer":
                 shipping_payload = {"mode": "me2", "local_pick_up": True, "free_shipping": False}
+            elif modo_envio == "not_specified":
+                shipping_payload = {"mode": "not_specified", "local_pick_up": True, "free_shipping": False}
             else:
-                shipping_payload = {"mode": "me2", "local_pick_up": True, "free_shipping": True}
+                shipping_payload = {"mode": "not_specified", "local_pick_up": True, "free_shipping": False}
 
             # Aplicar mercado envios dimensiones
             p_peso = prod.get('Peso')
@@ -5109,7 +5119,9 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                         
                 else:
                     error_texto = respuesta.text
-                    if "restrictions_coliving" in error_texto:
+                    if "restrictions_coliving" in error_texto or "Catalog has not mode" in error_texto or "User has not mode" in error_texto:
+                        if "Catalog has not mode" in error_texto or "User has not mode" in error_texto:
+                            datos_publicacion["shipping"] = {"mode": "not_specified", "local_pick_up": True, "free_shipping": False}
                         titulo_mascarado = re.sub(r'(?i)\b(canon|hp|epson|brother|samsung|apple|sony)\b', 'Compatible', titulo_original)
                         datos_publicacion["title"] = titulo_mascarado
                         
@@ -5143,16 +5155,16 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                             detalles = analizar_error_ml(res_bypass)
                             logs_totales.append(f"❌ [{nombre_perfil}] Error '{titulo_original[:15]}...': {detalles}")
                             PROGRESO_ACTUAL["errores"] += 1
-                            if idx_front: errores_interactivos[idx_front] = detalles
+                            if idx_front is not None and str(idx_front).strip() != "": errores_interactivos[str(idx_front)] = detalles
                     else:
                         detalles = analizar_error_ml(respuesta)
                         logs_totales.append(f"❌ [{nombre_perfil}] Error '{titulo_original[:15]}...': {detalles}")
                         PROGRESO_ACTUAL["errores"] += 1
-                        if idx_front: errores_interactivos[idx_front] = detalles
+                        if idx_front is not None and str(idx_front).strip() != "": errores_interactivos[str(idx_front)] = detalles
             except Exception as e_req:
                 logs_totales.append(f"❌ [{nombre_perfil}] Excepción enviando '{titulo_original[:15]}...': {str(e_req)}")
                 PROGRESO_ACTUAL["errores"] += 1
-                if idx_front: errores_interactivos[idx_front] = "Problema de conexión con el servidor ML."
+                if idx_front is not None and str(idx_front).strip() != "": errores_interactivos[str(idx_front)] = "Problema de conexión con el servidor ML."
 
     actualizar_progreso(100, "¡Lote Completado!")
     PROGRESO_ACTUAL["activo"] = False
