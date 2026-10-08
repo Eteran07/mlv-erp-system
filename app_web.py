@@ -132,6 +132,15 @@ def verify_auth(credentials: HTTPBasicCredentials = Depends(security)):
 
 app = FastAPI(title="ERP Mercado Libre - Dashboard Definitivo", dependencies=[Depends(verify_auth)])
 
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Permitir solicitudes de React (ej: http://localhost:5173)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 import os
 if not os.path.exists("lote_imagenes"):
     os.makedirs("lote_imagenes")
@@ -3862,13 +3871,13 @@ def endpoint_atributos_categoria(cat_id: str):
         if res.status_code == 200:
             attrs = res.json()
             relevantes = []
-            PROHIBIDOS = {"BRAND", "MODEL", "SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES", "MEASURE_UNIT_KEY", "INVOICE_PRODUCT_NAME", "SAT_KEY"}
+            PROHIBIDOS = {"SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES", "MEASURE_UNIT_KEY", "INVOICE_PRODUCT_NAME", "SAT_KEY"}
             for att in attrs:
                 aid = att.get("id")
                 tags = att.get("tags", {})
                 es_read_only = tags.get("read_only", False) or tags.get("hidden", False)
                 if aid not in PROHIBIDOS and not es_read_only:
-                    es_requerido = tags.get("required", False)
+                    es_requerido = tags.get("required", False) or tags.get("catalog_required", False)
                     valores_validos = [v.get("name") for v in att.get("values", [])[:10]]
                     # Extraemos las unidades permitidas oficiales
                     unidades_permitidas = [u.get("name") for u in att.get("allowed_units", [])]
@@ -3878,8 +3887,8 @@ def endpoint_atributos_categoria(cat_id: str):
                         "name": att.get("name"),
                         "value_type": att.get("value_type", "string"),
                         "hint": att.get("hint", ""),
-                        "values": att.get("values", [])[:20],
                         "required": es_requerido,
+                        "values": att.get("values", [])[:20],
                         "valid_values": valores_validos,
                         "allowed_units": unidades_permitidas
                     })
@@ -4090,7 +4099,7 @@ def manager_publicaciones(cuenta: str, offset: int = 0, q: str = "", filtro_esta
         bloque = item_ids[i:i+20]
         ids_str = ",".join(bloque)
         
-        res_det = requests.get(f"https://api.mercadolibre.com/items?ids={ids_str}&attributes=id,title,price,available_quantity,status,sub_status,health,attributes", headers=headers)
+        res_det = requests.get(f"https://api.mercadolibre.com/items?ids={ids_str}&attributes=id,title,price,available_quantity,status,sub_status,health,attributes,thumbnail,secure_thumbnail", headers=headers)
         data = res_det.json()
         
         if isinstance(data, dict) and "error" in data:
@@ -4122,6 +4131,7 @@ def manager_publicaciones(cuenta: str, offset: int = 0, q: str = "", filtro_esta
                 "stock": body.get("available_quantity", 0),
                 "sku": sku_str,
                 "status": body.get("status"),
+                "thumbnail": body.get("secure_thumbnail") or body.get("thumbnail"),
                 "sub_status": sub_status,
                 "health": body.get("health", 1),
                 "infraccion_razon": infracciones_dict.get(body.get("id"), "")
@@ -4163,6 +4173,38 @@ def manager_estado(datos: dict = Body(...)):
     
     return resultados
 
+@app.post("/api/manager/actualizar-items")
+def manager_actualizar_items(datos: dict = Body(...)):
+    cuenta = datos.get("cuenta")
+    items_cambiados = datos.get("items", [])
+    
+    token = obtener_token(cuenta)
+    if not token: return {"error": "Token inválido"}
+    
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    
+    resultados = {"exitos": 0, "errores": 0, "detalles": []}
+    
+    for item in items_cambiados:
+        item_id = item.get("id")
+        payload = {}
+        if "price" in item:
+            payload["price"] = float(item["price"])
+        if "stock" in item:
+            payload["available_quantity"] = int(item["stock"])
+            
+        if not payload:
+            continue
+            
+        res = requests.put(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, json=payload)
+        if res.status_code in [200, 201]:
+            resultados["exitos"] += 1
+        else:
+            resultados["errores"] += 1
+            resultados["detalles"].append(f"Error {item_id}: {res.text}")
+            
+    return resultados
+
 @app.get("/api/galeria-local")
 def endpoint_galeria_local():
     if not os.path.exists(CARPETA_LOTE_IMAGENES):
@@ -4185,6 +4227,17 @@ def endpoint_galeria_local():
             except Exception:
                 pass
     return lista_fotos
+
+@app.delete("/api/eliminar-imagen-local")
+def api_eliminar_imagen_local(nombre: str):
+    ruta = os.path.join(CARPETA_LOTE_IMAGENES, nombre)
+    if os.path.exists(ruta):
+        try:
+            os.remove(ruta)
+            return {"mensaje": "Imagen eliminada"}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+    raise HTTPException(status_code=404, detail="No encontrada")
 
 def sanitizar_atributo_por_tipo(valor_crudo, tipo_esperado, allowed_units, valid_values):
     """Fuerza y formatea el valor devuelto por la IA para cumplir con el esquema de Mercado Libre."""
@@ -4530,8 +4583,10 @@ def api_refrescar_fotos(items: list[dict]):
         modelo = item.get("modelo", "")
         titulo = item.get("titulo", "")
         
+        print(f"DEBUG api_refrescar_fotos: idx={idx}, sku='{sku}', modelo='{modelo}', titulo='{titulo}'")
         # Volvemos a lanzar la función emparejadora con la data actualizada
         img_b64, alerta = emparejar_imagen_local(modelo, sku, titulo)
+        print(f"DEBUG api_refrescar_fotos: img_b64 found={bool(img_b64)}")
         
         if img_b64:
             resultados.append({
@@ -4539,7 +4594,7 @@ def api_refrescar_fotos(items: list[dict]):
                 "b64": img_b64
             })
             
-    return resultados
+    return {"resultados": resultados}
 # -----------------------------------
 
 
@@ -4680,11 +4735,10 @@ def previsualizar_archivo(
         else:
             motivo_estado = "✅ Aprobado (Listo para Publicar)"
             if filtrar_duplicados == "true":
-                # 🟢 NUEVA LÓGICA: Ocultar SOLO si está publicado en TODAS las cuentas seleccionadas
+                # 🟢 NUEVA LÓGICA: Ocultar si está publicado en AL MENOS UNA cuenta
                 if (cuenta == "TODAS" or verificar_todas.lower() == "true"):
-                    # Cambiamos 'any' por 'all'. Solo lo omite si TODOS dicen "EXISTE".
-                    if all(est == "EXISTE" for est in estado_cuentas.values()):
-                        motivo_estado = "🚫 Omitido (Ya publicado en TODAS las cuentas registradas)"
+                    if any(est == "EXISTE" for est in estado_cuentas.values()):
+                        motivo_estado = "🚫 Omitido (Ya publicado en alguna cuenta registrada)"
                 
                 # Si solo validamos contra la cuenta elegida individualmente
                 elif cuenta != "TODAS" and existe_en_seleccionada:
@@ -4935,7 +4989,10 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
 
             if prod.get('DescripcionCustom') and len(str(prod['DescripcionCustom']).strip()) > 5:
                 cuerpo_desc = f"{prod['DescripcionCustom']}\n"
-                descripcion_estructurada = f"{BLOQUE_SUPERIOR}\n\n{titulo_x3}\n{cuerpo_desc}\n{bloque_tecnico}{BLOQUE_INFERIOR}"
+                if "SOMOS TIENDA FÍSICA" in cuerpo_desc or "SOMOS TIENDA FSICA" in cuerpo_desc:
+                    descripcion_estructurada = cuerpo_desc
+                else:
+                    descripcion_estructurada = f"{BLOQUE_SUPERIOR}\n\n{titulo_x3}\n{cuerpo_desc}\n{bloque_tecnico}{BLOQUE_INFERIOR}"
             else:
                 descripcion_estructurada = f"{BLOQUE_SUPERIOR}\n\n{titulo_x3}\n{bloque_tecnico}{BLOQUE_INFERIOR}"
 
@@ -5364,11 +5421,17 @@ def api_ventas_ordenes(cuenta: str, offset: int = 0):
         comprador = order.get("buyer", {})
         pagos = order.get("payments", [])
         total_pagado = sum(p.get("total_paid_amount", 0) for p in pagos)
+        if total_pagado == 0:
+            total_pagado = order.get("total_amount", 0)
+            
         status = order.get("status", "unknown")
         
         articulos = []
         for item in order.get("order_items", []):
             articulos.append(item.get("item", {}).get("title", "Artículo desconocido"))
+            
+        first_last = f"{comprador.get('first_name','')} {comprador.get('last_name','')}".strip()
+        buyer_name = first_last if first_last else comprador.get("nickname", "Comprador")
             
         resultados.append({
             "id": order.get("id"),
@@ -5376,8 +5439,9 @@ def api_ventas_ordenes(cuenta: str, offset: int = 0):
             "date_created": order.get("date_created"),
             "status": status,
             "buyer_id": comprador.get("id"),
-            "buyer_name": comprador.get("nickname") or f"{comprador.get('first_name','')} {comprador.get('last_name','')}",
+            "buyer_name": buyer_name,
             "total_paid": total_pagado,
+            "currency_id": order.get("currency_id", "VES"),
             "items": ", ".join(articulos)
         })
         
@@ -5389,12 +5453,15 @@ def api_ventas_ordenes(cuenta: str, offset: int = 0):
 
 @app.get("/api/ventas/mensajes/{pack_id}")
 def api_ventas_mensajes_get(pack_id: str, cuenta: str, user_id: str):
+    if pack_id in ["null", "undefined", ""]: return {"mensajes": []}
     token = obtener_token(cuenta)
     if not token: return {"error": "Token inválido."}
     headers = {"Authorization": f"Bearer {token}"}
     
-    url = f"https://api.mercadolibre.com/messages/packs/{pack_id}/sellers/{user_id}?mark_as_read=true"
+    url = f"https://api.mercadolibre.com/messages/packs/{pack_id}/sellers/{user_id}?mark_as_read=true&tag=post_sale"
     res = requests.get(url, headers=headers)
+    if res.status_code == 404:
+        return {"mensajes": []} # No hay conversación iniciada
     if res.status_code != 200:
         return {"error": f"No se pudieron cargar los mensajes. Status {res.status_code}", "detalles": res.text}
         
@@ -5415,8 +5482,10 @@ def api_ventas_mensajes_get(pack_id: str, cuenta: str, user_id: str):
         
     return {"mensajes": historial[::-1]} # Reversar para que el más viejo esté arriba
 
+from fastapi import Request
 @app.post("/api/ventas/mensajes/{pack_id}")
-def api_ventas_mensajes_post(pack_id: str, payload: dict):
+async def api_ventas_mensajes_post(pack_id: str, request: Request):
+    payload = await request.json()
     cuenta = payload.get("cuenta")
     user_id = payload.get("user_id")
     buyer_id = payload.get("buyer_id")
@@ -5425,17 +5494,16 @@ def api_ventas_mensajes_post(pack_id: str, payload: dict):
     token = obtener_token(cuenta)
     if not token: return {"error": "Token inválido."}
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    
-    url = f"https://api.mercadolibre.com/messages/packs/{pack_id}/sellers/{user_id}"
+    url = f"https://api.mercadolibre.com/messages/packs/{pack_id}/sellers/{user_id}?tag=post_sale"
     body = {
         "from": {"user_id": user_id},
         "to": {"user_id": buyer_id},
-        "text": {"plain": text}
+        "text": text
     }
     
     res = requests.post(url, headers=headers, json=body)
     if res.status_code not in [200, 201]:
-        return {"error": f"No se pudo enviar. Status {res.status_code}", "detalles": res.text}
+        return {"error": f"No se pudo enviar. Status {res.status_code}. Detalles: {res.text}", "detalles": res.text}
         
     return {"success": True}
 
@@ -5500,23 +5568,43 @@ def api_ventas_detalle(order_id: str, cuenta: str):
     items = []
     for oi in order.get("order_items", []):
         it = oi.get("item", {})
+        item_id = it.get("id")
+        
+        # Obtener thumbnail del item si es posible
+        thumbnail_url = ""
+        try:
+            res_item = requests.get(f"https://api.mercadolibre.com/items/{item_id}?attributes=secure_thumbnail,thumbnail", headers=headers)
+            if res_item.status_code == 200:
+                item_data = res_item.json()
+                thumbnail_url = item_data.get("secure_thumbnail") or item_data.get("thumbnail") or ""
+        except:
+            pass
+            
         items.append({
-            "id": it.get("id"),
+            "id": item_id,
             "titulo": it.get("title"),
             "cantidad": oi.get("quantity"),
             "precio_unit": oi.get("unit_price"),
-            "moneda": oi.get("currency_id", "$")
+            "moneda": oi.get("currency_id", "$"),
+            "thumbnail": thumbnail_url
         })
     
     # Payments
     pagos = order.get("payments", [])
-    pago_info = {}
+    pago_info = {
+        "metodo": "N/A",
+        "estado": order.get("status", "N/A"),
+        "total": order.get("total_amount", 0),
+        "cuotas": 1,
+        "moneda": order.get("currency_id", "$")
+    }
     if pagos:
         p = pagos[0]
+        total_pagado = p.get("total_paid_amount", 0)
         pago_info = {
             "metodo": p.get("payment_type", "N/A"),
             "estado": p.get("status", "N/A"),
-            "total": p.get("total_paid_amount", 0),
+            "total": total_pagado if total_pagado > 0 else order.get("total_amount", 0),
             "cuotas": p.get("installments", 1),
             "moneda": p.get("currency_id", "$")
         }
@@ -5672,7 +5760,7 @@ if __name__ == "__main__":
 
     def run_server():
         # Ejecuta el servidor web en silencio (critical) para no crashear la app en modo noconsole
-        uvicorn.run(app, host="127.0.0.1", port=8080, log_level="critical")
+        uvicorn.run(app, host="127.0.0.1", port=8000, log_level="critical")
 
     t = threading.Thread(target=run_server)
     t.daemon = True
@@ -5682,6 +5770,6 @@ if __name__ == "__main__":
     time.sleep(1)
 
     # Creamos una ventana de aplicacion nativa de Windows
-    webview.create_window("ERP Mercado Libre - MLV", "http://127.0.0.1:8080", width=1200, height=800)
+    webview.create_window("ERP Mercado Libre - MLV", "http://127.0.0.1:8000", width=1200, height=800)
     webview.start()
 
