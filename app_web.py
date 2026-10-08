@@ -4341,7 +4341,7 @@ def autollenar_atributos_ia(
         attrs_ml = obtener_atributos_categoria_ml_cached(cat_id)
         if not attrs_ml:
             return {"error": "No se pudieron obtener los atributos de Mercado Libre tras reintentos."}
-        PROHIBIDOS = {"BRAND", "MODEL", "SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES", "MEASURE_UNIT_KEY", "INVOICE_PRODUCT_NAME", "SAT_KEY"}
+        PROHIBIDOS = {"SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES", "MEASURE_UNIT_KEY", "INVOICE_PRODUCT_NAME", "SAT_KEY"}
         
         mapa_esquema = {}
         mapa_nombres_espanol = {} # 🟢 NUEVO: Diccionario salvavidas
@@ -4390,13 +4390,13 @@ Analiza este producto:
 
 Tu tarea es devolver ÚNICAMENTE un objeto JSON válido. NO devuelvas texto extra ni formato markdown.
 
-REGLAS ESTRICTAS DE CLAVES JSON:
+REGLAS ESTRICTAS DE CLAVES JSON Y DESCRIPCION:
 - Usa EXACTAMENTE las claves en mayúsculas de la izquierda (Ej: usa "DISPLAY_SIZE", NO "Tamaño de la pantalla").
-- La primera clave debe ser "DESCRIPCION_COMERCIAL": "Descripción atractiva aquí".
+- La primera clave debe ser "DESCRIPCION_COMERCIAL". Su valor DEBE ser un párrafo extenso, detallado y persuasivo que explique las especificaciones técnicas, beneficios y posibles casos de uso. NO seas superficial, agrega valor real sobre el producto.
 
-REGLAS DE VALORES:
-- TIPO 'number_unit': DEBES devolver un string combinando número y unidad separados por espacio (Ej: "15.6 \"", "1 TB", "8 GB").
-- ATRIBUTOS [OBLIGATORIO]: NUNCA los dejes vacíos. Haz tu mejor esfuerzo por deducirlo del título. Si es de PC/Laptop y no indica pantalla, asume "15.6 \"". Si no indica RAM asume "8 GB", etc. Nunca devuelvas un campo vacío en obligatorios.
+REGLAS DE VALORES (EXTREMADAMENTE IMPORTANTES):
+- ATRIBUTOS [OBLIGATORIO]: ¡SI O SI DEBEN SER LLENADOS! NUNCA uses "N/A", "No aplica", ni los dejes vacíos a menos que sea la única opción. Si la información (como BRAND o MODEL) no está explícita, haz una inferencia profesional basada en el título, o extrae la marca principal.
+- TIPO 'number_unit': No basta con escribir cualquier símbolo. Debes REVISAR LA LISTA DE [Unidades válidas] del esquema para ese atributo y elegir EXACTAMENTE uno de esos símbolos oficiales. Devuelve el número seguido de un espacio y el símbolo oficial (Ej: "15.6 \"", "1 TB", "8 GB"). Si te equivocas de símbolo, Mercado Libre rechazará la publicación.
 
 ESQUEMA DE ATRIBUTOS PERMITIDOS (Las claves exactas de tu JSON deben ser estas):
 {{
@@ -4456,6 +4456,32 @@ HISTORIAL DE RECHAZOS (APRENDE DE ESTOS FALLOS):
             return {"error": "El formato devuelto por la IA estaba corrupto."}
 
         descripcion_ia = datos_ia.pop("DESCRIPCION_COMERCIAL", "")
+        
+        # Plantillas de la tienda
+        bloque_sup = "SOMOS TIENDA FÍSICA, Empresa Mayorista Líder en el Mercado de la Computación Producto 100% de calidad\n"
+        bloque_inf = """
+.Por Favor Verifique la disponibilidad antes de ofertar
+Por Favor Verifique la disponibilidad antes de ofertar
+Por Favor Verifique la disponibilidad antes de ofertar
+**************************************************************************************************
+- Emitimos factura LEGAL
+- Trabajamos con agentes de retención
+- Enviamos a todo el País.
+**************************************************************************************************
+COMENTARIOS:
+- Realice todas las preguntas necesarias Antes de ofertar.
+- El equipo de ventas está a tu disposición para responder tus consultas.
+- Te invitamos a que solo ofertes cuando estés seguro de realizar la compra.
+- La disponibilidad y precio del producto publicado solo se garantiza por un lapso de 24hrs luego de haber solicitado la compra.
+- Si presentas algún inconveniente durante el proceso de compras estaremos a tu completa disposición para atenderte y solventar la situación. Deseamos que tu compra con nosotros siempre genere una calificación positiva.
+**************************************************************************************************
+**HORARIO DE TRABAJO**
+****************************************************
+De Lunes A Viernes
+De 8:30am A 5:30pm
+"""
+        if descripcion_ia:
+            descripcion_ia = f"{bloque_sup}\n{descripcion_ia.strip()}\n\n{bloque_inf}"
 
         atributos_finales = {}
         for k, v in datos_ia.items():

@@ -24,7 +24,7 @@ const SHIPPING_OPTS = [
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //  ProductRow - una fila expandible con todos los campos
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function ProductRow({ p, idx, selected, onToggle, rowData, onRowChange, onAIFill }) {
+function ProductRow({ p, idx, selected, onToggle, rowData, onRowChange, onAIFill, onOpenCatSearch }) {
   const [expanded, setExpanded] = useState(false);
   const [showDesc, setShowDesc] = useState(false);
   const [iaLoading, setIaLoading] = useState(false);
@@ -98,8 +98,12 @@ function ProductRow({ p, idx, selected, onToggle, rowData, onRowChange, onAIFill
             className="w-full font-bold text-slate-800 text-base bg-transparent border-b border-transparent hover:border-slate-300 focus:border-blue-400 focus:outline-none pb-0.5 transition-colors"
           />
           <div className="flex flex-wrap gap-1 mt-1 items-center">
-            <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-mono">
-              {p.CategoriaNombre || 'Sin categoria'}
+            <span 
+              className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-mono cursor-pointer hover:bg-slate-200 border border-slate-200"
+              onClick={() => onOpenCatSearch(idx)}
+              title="Click para buscar y cambiar categoria manualmente"
+            >
+              {rowData.cat_nombre ?? p.CategoriaNombre ?? 'Sin categoria'} {rowData.cat_id ? `(${rowData.cat_id})` : ''} ✏️
             </span>
             <span className="text-[10px] text-slate-400 font-mono">
               SKU: {p.SKU || 'N/A'} | Mod: {p.Modelo || 'N/A'}
@@ -282,9 +286,10 @@ function ProductRow({ p, idx, selected, onToggle, rowData, onRowChange, onAIFill
       <AttributesModal
         isOpen={showAttrModal}
         onClose={() => setShowAttrModal(false)}
-        catId={p.Categoria_ID}
+        catId={rowData.cat_id ?? p.Categoria_ID}
         titulo={p.Titulo}
         rowData={rowData}
+        p={p}
         onSave={(vals) => {
            onRowChange(idx, 'aiAtributos', vals);
            setShowAttrModal(false);
@@ -298,20 +303,66 @@ function ProductRow({ p, idx, selected, onToggle, rowData, onRowChange, onAIFill
 //  Main ExcelSync Component
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-function AttributesModal({ isOpen, onClose, catId, titulo, rowData, onSave }) {
+function AttributesModal({ isOpen, onClose, catId, titulo, rowData, p, onSave }) {
   const [attrs, setAttrs] = useState([]);
   const [loading, setLoading] = useState(false);
   const [localVals, setLocalVals] = useState(rowData?.aiAtributos || {});
 
   useEffect(() => {
     if (!isOpen) return;
-    setLocalVals(rowData?.aiAtributos || {});
+    
+    const init = { ...(rowData?.aiAtributos || {}) };
+    if (!init.BRAND && p?.Marca) init.BRAND = p.Marca;
+    if (!init.MODEL && p?.Modelo) init.MODEL = p.Modelo;
+    
+    setLocalVals(init);
     setLoading(true);
     fetch(`/api/atributos-categoria/${catId}`)
       .then(r => r.json())
-      .then(d => { setAttrs(d); setLoading(false); })
+      .then(d => { 
+        setAttrs(d); 
+        // Autofill N/A for mandatory string/string_list attributes that are missing
+        const updatedVals = { ...init };
+        d.forEach(a => {
+            if (a.tags?.includes('required') && (a.value_type === 'string' || a.value_type === 'string_list')) {
+                // If it's empty, and not an options-only field
+                if (!updatedVals[a.id] && (!a.values || a.values.length === 0)) {
+                    updatedVals[a.id] = "N/A";
+                }
+            }
+        });
+        setLocalVals(updatedVals);
+        setLoading(false); 
+      })
       .catch(() => setLoading(false));
-  }, [isOpen, catId, rowData]);
+  }, [isOpen, catId, rowData, p]);
+
+  const renderField = (a) => {
+    const val = localVals[a.id] || '';
+    if (a.value_type === "number_unit" && a.allowed_units && a.allowed_units.length > 0) {
+      const currentUnit = a.allowed_units.find(u => val.endsWith(u)) || a.allowed_units[0];
+      const num = val.replace(currentUnit, '').trim();
+      return (
+        <div className="flex gap-2">
+          <input type="number" step="any" value={num} onChange={e => setLocalVals({...localVals, [a.id]: `${e.target.value} ${currentUnit}`.trim()})} className="flex-1 border border-slate-300 rounded-lg p-2 text-sm focus:border-blue-500 outline-none" placeholder={a.hint || ''} />
+          <select value={currentUnit} onChange={e => setLocalVals({...localVals, [a.id]: `${num} ${e.target.value}`.trim()})} className="w-24 border border-slate-300 rounded-lg p-2 text-sm bg-white focus:border-blue-500 outline-none">
+            {a.allowed_units.map(u => <option key={u} value={u}>{u}</option>)}
+          </select>
+        </div>
+      );
+    }
+    if (a.values && a.values.length > 0) {
+      return (
+        <select value={val} onChange={e => setLocalVals({...localVals, [a.id]: e.target.value})} className="w-full border border-slate-300 rounded-lg p-2 text-sm bg-white focus:border-blue-500 outline-none">
+          <option value="">Seleccione...</option>
+          {a.values.map(v => <option key={v.id} value={v.name}>{v.name}</option>)}
+        </select>
+      );
+    }
+    return (
+      <input type="text" value={val} onChange={e => setLocalVals({...localVals, [a.id]: e.target.value})} className="w-full border border-slate-300 rounded-lg p-2 text-sm focus:border-blue-500 outline-none" placeholder={a.hint || ''} />
+    );
+  };
 
   if (!isOpen) return null;
 
@@ -336,14 +387,7 @@ function AttributesModal({ isOpen, onClose, catId, titulo, rowData, onSave }) {
                     {attrs.filter(a => a.required).map(a => (
                       <div key={a.id}>
                         <label className="block text-sm font-bold text-slate-700 mb-1">{a.name} <span className="text-red-500">*</span></label>
-                        {a.values && a.values.length > 0 ? (
-                          <select value={localVals[a.id] || ''} onChange={e => setLocalVals({...localVals, [a.id]: e.target.value})} className="w-full border border-slate-300 rounded-lg p-2 text-sm bg-white focus:border-blue-500 outline-none">
-                            <option value="">Seleccione...</option>
-                            {a.values.map(v => <option key={v.id} value={v.name}>{v.name}</option>)}
-                          </select>
-                        ) : (
-                          <input type="text" value={localVals[a.id] || ''} onChange={e => setLocalVals({...localVals, [a.id]: e.target.value})} className="w-full border border-slate-300 rounded-lg p-2 text-sm focus:border-blue-500 outline-none" placeholder={a.hint || ''} />
-                        )}
+                        {renderField(a)}
                       </div>
                     ))}
                   </div>
@@ -356,14 +400,7 @@ function AttributesModal({ isOpen, onClose, catId, titulo, rowData, onSave }) {
                     {attrs.filter(a => !a.required).map(a => (
                       <div key={a.id}>
                         <label className="block text-sm font-bold text-slate-600 mb-1">{a.name}</label>
-                        {a.values && a.values.length > 0 ? (
-                          <select value={localVals[a.id] || ''} onChange={e => setLocalVals({...localVals, [a.id]: e.target.value})} className="w-full border border-slate-300 rounded-lg p-2 text-sm bg-white focus:border-blue-500 outline-none">
-                            <option value="">Seleccione...</option>
-                            {a.values.map(v => <option key={v.id} value={v.name}>{v.name}</option>)}
-                          </select>
-                        ) : (
-                          <input type="text" value={localVals[a.id] || ''} onChange={e => setLocalVals({...localVals, [a.id]: e.target.value})} className="w-full border border-slate-300 rounded-lg p-2 text-sm focus:border-blue-500 outline-none" placeholder={a.hint || ''} />
-                        )}
+                        {renderField(a)}
                       </div>
                     ))}
                   </div>
@@ -420,6 +457,7 @@ export default function ExcelSync() {
   const [selectedRows, setSelectedRows] = useState(new Set());
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
+  const [manualCatSearch, setManualCatSearch] = useState({ isOpen: false, idx: null, query: '', results: [], loading: false });
   const [viewMode, setViewMode] = useState('categorias');
   const [rowData, setRowData] = useState({});
   const [currentPage, setCurrentPage] = useState(1);
@@ -852,6 +890,86 @@ De 8:30am A 5:30pm`;
           </div>
         </div>
       )}
+
+      {/* Manual Category Search Modal */}
+      {manualCatSearch.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 z-[999] flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col">
+            <div className="p-4 border-b border-slate-200 flex items-center justify-between">
+              <h3 className="font-black text-lg text-slate-800 flex items-center gap-2">
+                ✏️ Cambiar Categoría
+              </h3>
+              <button onClick={() => setManualCatSearch({ ...manualCatSearch, isOpen: false })} className="text-slate-400 hover:text-slate-600">
+                x
+              </button>
+            </div>
+            <div className="p-4 bg-slate-50 border-b border-slate-200">
+              <div className="flex gap-2">
+                <input 
+                  type="text" 
+                  value={manualCatSearch.query}
+                  onChange={(e) => setManualCatSearch({ ...manualCatSearch, query: e.target.value })}
+                  placeholder="Ej: Laptops, Discos Duros, MLV1234"
+                  className="flex-1 p-2 border border-slate-300 rounded focus:border-[#0284c7] outline-none"
+                  onKeyDown={async (e) => {
+                    if (e.key === 'Enter' && manualCatSearch.query.trim()) {
+                      setManualCatSearch(prev => ({ ...prev, loading: true, results: [] }));
+                      try {
+                        const res = await fetch(`/api/buscar-categorias-mlv?q=${encodeURIComponent(manualCatSearch.query.trim())}`);
+                        const data = await res.json();
+                        setManualCatSearch(prev => ({ ...prev, loading: false, results: data }));
+                      } catch {
+                        setManualCatSearch(prev => ({ ...prev, loading: false }));
+                      }
+                    }
+                  }}
+                />
+                <button 
+                  onClick={async () => {
+                    if (!manualCatSearch.query.trim()) return;
+                    setManualCatSearch(prev => ({ ...prev, loading: true, results: [] }));
+                    try {
+                      const res = await fetch(`/api/buscar-categorias-mlv?q=${encodeURIComponent(manualCatSearch.query.trim())}`);
+                      const data = await res.json();
+                      setManualCatSearch(prev => ({ ...prev, loading: false, results: data }));
+                    } catch {
+                      setManualCatSearch(prev => ({ ...prev, loading: false }));
+                    }
+                  }}
+                  className="px-4 py-2 bg-[#0284c7] hover:bg-[#0369a1] text-white rounded font-bold"
+                >
+                  Buscar
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 max-h-[50vh] overflow-y-auto bg-white p-2">
+              {manualCatSearch.loading ? (
+                <div className="p-4 text-center text-slate-500 font-bold">Buscando...</div>
+              ) : manualCatSearch.results.length === 0 && manualCatSearch.query ? (
+                <div className="p-4 text-center text-slate-500 text-sm">Presiona Enter o Buscar. Si no aparece, prueba otras palabras.</div>
+              ) : (
+                <div className="flex flex-col">
+                  {manualCatSearch.results.map((c) => (
+                    <button 
+                      key={c.id}
+                      onClick={() => {
+                        onRowChange(manualCatSearch.idx, 'cat_id', c.id);
+                        onRowChange(manualCatSearch.idx, 'cat_nombre', `Cat Manual: ${c.name}`);
+                        setManualCatSearch({ isOpen: false, idx: null, query: '', results: [], loading: false });
+                      }}
+                      className="p-3 text-left hover:bg-slate-50 border-b border-slate-100 last:border-0 flex items-center justify-between group"
+                    >
+                      <span className="text-sm font-medium text-slate-700">{c.name}</span>
+                      <span className="text-xs font-mono text-slate-400 group-hover:text-[#0284c7]">{c.id}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header Steps */}
       <div className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shrink-0">
         <h1 className="text-xl font-bold text-slate-800 flex items-center gap-2">
@@ -1169,7 +1287,7 @@ De 8:30am A 5:30pm`;
                     ) : viewMode === 'lineal' ? (
                       <div className="space-y-0 border border-t-0 border-slate-200 rounded-b-lg">
                         {paginatedItems.map(({ p, idx }) => (
-                          <ProductRow key={idx} p={p} idx={idx} selected={selectedRows.has(idx)} onToggle={toggleOne} rowData={rowData[idx] || {}} onRowChange={onRowChange} onAIFill={onAIFill}/>
+                          <ProductRow key={idx} p={p} idx={idx} selected={selectedRows.has(idx)} onToggle={toggleOne} rowData={rowData[idx] || {}} onRowChange={onRowChange} onAIFill={onAIFill} onOpenCatSearch={(i) => setManualCatSearch({ isOpen: true, idx: i, query: '', results: [], loading: false })} />
                         ))}
                       </div>
                     ) : (
@@ -1186,7 +1304,7 @@ De 8:30am A 5:30pm`;
                             </div>
                             <div className="pl-2">
                               {items.map(({ p, idx }) => (
-                                <ProductRow key={idx} p={p} idx={idx} selected={selectedRows.has(idx)} onToggle={toggleOne} rowData={rowData[idx] || {}} onRowChange={onRowChange} onAIFill={onAIFill}/>
+                                <ProductRow key={idx} p={p} idx={idx} selected={selectedRows.has(idx)} onToggle={toggleOne} rowData={rowData[idx] || {}} onRowChange={onRowChange} onAIFill={onAIFill} onOpenCatSearch={(i) => setManualCatSearch({ isOpen: true, idx: i, query: '', results: [], loading: false })} />
                               ))}
                             </div>
                           </div>

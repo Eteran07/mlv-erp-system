@@ -1,10 +1,11 @@
 import os
 import pandas as pd
-from google import genai
+import requests
+import json
 from dotenv import load_dotenv
 
 load_dotenv()
-cliente_ia = genai.Client()
+api_key = os.getenv("OPENROUTER_API_KEY")
 
 BLOQUE_SUPERIOR = "SOMOS TIENDA FÍSICA, Empresa Mayorista Líder en el Mercado de la Computación Producto 100% de calidad\n"
 
@@ -31,21 +32,37 @@ De 8:30am A 5:30pm
 """
 
 def redactar_con_ia(titulo):
-    prompt = f"Escribe un solo párrafo corto (máximo 4 líneas), persuasivo y técnico, sobre el producto: '{titulo}'. No incluyas saludos, ni viñetas, solo el texto puro."
+    prompt = f"Eres un experto en ventas y tecnología. Redacta una descripción extensa, muy detallada, persuasiva y técnica sobre el producto: '{titulo}'. Agrega valor real explicando posibles casos de uso, beneficios, características técnicas destacadas y por qué es una excelente compra. No incluyas saludos. Genera un texto en prosa, bien estructurado, que demuestre conocimiento profundo del producto."
+    
+    headers_or = {
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": "http://localhost:8080",
+        "X-Title": "Generador de Descripciones ML",
+        "Content-Type": "application/json"
+    }
+    
+    payload_or = {
+        "model": "deepseek/deepseek-chat",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.7
+    }
     
     try:
-        # ¡ACTUALIZADO AL MODELO MÁS RECIENTE!
-        respuesta = cliente_ia.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=prompt
-        )
-        return respuesta.text.strip()
+        url_openrouter = "https://openrouter.ai/api/v1/chat/completions"
+        res = requests.post(url_openrouter, headers=headers_or, json=payload_or, timeout=60)
+        
+        if res.status_code == 200:
+            datos = res.json()
+            return datos["choices"][0]["message"]["content"].strip()
+        else:
+            print(f"Error de OpenRouter (Cod {res.status_code}): {res.text}")
+            return "Excelente producto de alta calidad y rendimiento garantizado."
     except Exception as e:
         print(f"Error con la IA para {titulo}: {e}")
         return "Excelente producto de alta calidad y rendimiento garantizado."
 
 def procesar_excel():
-    print("=== 🤖 INICIANDO GENERADOR DE DESCRIPCIONES ===")
+    print("=== ✨ INICIANDO GENERADOR DE DESCRIPCIONES ===")
     
     try:
         df = pd.read_excel("inventario.xlsx")
