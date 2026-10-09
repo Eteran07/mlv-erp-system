@@ -3,7 +3,7 @@ import {
   FileSpreadsheet, Upload, Settings2, Eye, Play,
   CheckCircle2, AlertCircle, Loader2, ArrowRight, Database, Table,
   Rows3, LayoutGrid, Bot, Camera, Zap, Image,
-  ChevronDown, ChevronUp, Star
+  ChevronDown, ChevronUp, Star, ZoomIn
 } from 'lucide-react';
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -423,6 +423,7 @@ function AttributesModal({ isOpen, onClose, catId, titulo, rowData, p, onSave })
 
 export default function ExcelSync() {
   const [dialog, setDialog] = useState({ isOpen: false, type: 'alert', message: '', onConfirm: null, onCancel: null });
+  const [zoomLevel, setZoomLevel] = useState(100);
   const [toasts, setToasts] = useState([]);
   
   const customAlert = (message, type = 'success') => {
@@ -435,7 +436,7 @@ export default function ExcelSync() {
   const customConfirm = (message, onConfirmCallback) => setDialog({ isOpen: true, type: 'confirm', message, onConfirm: () => { setDialog({ isOpen: false, type: 'alert', message: '', onConfirm: null, onCancel: null }); if (onConfirmCallback) onConfirmCallback(); }, onCancel: () => setDialog({ isOpen: false, type: 'alert', message: '', onConfirm: null, onCancel: null }) });
 
   const [cuentas, setCuentas] = useState([]);
-  const [cuentaActiva, setCuentaActiva] = useState('TODAS');
+  const [cuentasActivas, setCuentasActivas] = useState(['TODAS']);
 
   // Step 1
   const [file, setFile] = useState(null);
@@ -596,9 +597,36 @@ export default function ExcelSync() {
     });
     customAlert(`Forma de envio aplicada a ${selectedRows.size} productos.`);
   };
+  const toggleCurrentPage = () => {
+    const pageIndices = paginatedItems.map(i => i.idx);
+    const allOnPageSelected = pageIndices.every(idx => selectedRows.has(idx));
+    
+    const newSet = new Set(selectedRows);
+    if (allOnPageSelected) {
+      pageIndices.forEach(idx => newSet.delete(idx));
+    } else {
+      pageIndices.forEach(idx => newSet.add(idx));
+    }
+    setSelectedRows(newSet);
+  };
+  
   const toggleAll = () => {
-    const total = previewData?.productos?.length || 0;
-    setSelectedRows(selectedRows.size === total ? new Set() : new Set([...Array(total).keys()]));
+    const allIndices = filteredItems.map(i => i.idx);
+    setSelectedRows(selectedRows.size === allIndices.length ? new Set() : new Set(allIndices));
+  };
+  
+  const [rangeStart, setRangeStart] = useState(1);
+  const [rangeEnd, setRangeEnd] = useState(10);
+  const selectRange = () => {
+    const newSet = new Set(selectedRows);
+    filteredItems.forEach((item, index) => {
+      const pos = index + 1; // 1-based
+      if (pos >= rangeStart && pos <= rangeEnd) {
+        newSet.add(item.idx);
+      }
+    });
+    setSelectedRows(newSet);
+    customAlert(`Seleccionados del ${rangeStart} al ${rangeEnd}`);
   };
 
   // IA masiva
@@ -606,10 +634,10 @@ export default function ExcelSync() {
     const items = previewData?.productos || [];
     const validIdxs = [...selectedRows].filter(i => items[i]);
     if (!validIdxs.length) return;
-    customConfirm(`Generar fichas IA para ${validIdxs.length} articulos? Se procesaran en lotes de 5.`, async () => {
+    customConfirm(`Generar fichas IA para ${validIdxs.length} articulos? Se procesarán en lotes de 10.`, async () => {
     setIaAllLoading(true);
     setIaProgress({ done: 0, total: validIdxs.length });
-    const BATCH = 5;
+    const BATCH = 10;
     for (let i = 0; i < validIdxs.length; i += BATCH) {
       const chunk = validIdxs.slice(i, i + BATCH);
       await Promise.all(chunk.map(async (idx) => {
@@ -626,7 +654,7 @@ export default function ExcelSync() {
         } catch {}
         setIaProgress(prev => ({ ...prev, done: prev.done + 1 }));
       }));
-      if (i + BATCH < validIdxs.length) await new Promise(r => setTimeout(r, 2000));
+      if (i + BATCH < validIdxs.length) await new Promise(r => setTimeout(r, 3000));
     }
     setIaAllLoading(false);
     customAlert('Autollenado IA completado!');
@@ -637,7 +665,7 @@ export default function ExcelSync() {
     customConfirm('ÂSincronizar memoria de cuentas con MercadoLibre? Esto puede tomar un momento.', async () => {
       setIsPublishing(true); setStep(4);
       setActiveTaskName('Sincronizando Memoria ML...'); setPublishResult(null);
-      const fd = new FormData(); fd.append('cuenta', cuentaActiva);
+      const fd = new FormData(); fd.append('cuenta', cuentasActivas.includes('TODAS') ? 'TODAS' : cuentasActivas.join(','));
       const iv = startProgressTracking();
       try {
         const d = await fetch('/api/sincronizar-memoria-ml', { method: 'POST', body: fd }).then(r => r.json());
@@ -693,7 +721,7 @@ export default function ExcelSync() {
     setActiveTaskName('Generando Vista Previa...'); setPublishResult(null);
 
     const fd = new FormData();
-    fd.append('file', file); fd.append('cuenta', cuentaActiva); fd.append('hoja', hojaActiva);
+    fd.append('file', file); fd.append('cuenta', cuentasActivas.includes('TODAS') ? 'TODAS' : cuentasActivas.join(',')); fd.append('hoja', hojaActiva);
     fd.append('inicio', filterMode === 'range' ? config.inicio : 1);
     fd.append('fin',    filterMode === 'range' ? config.fin    : 99999);
     fd.append('cantidad_limite', filterMode === 'limit' ? config.cantidad_limite : 0);
@@ -819,7 +847,7 @@ De 8:30am A 5:30pm`;
       }));
     const iv = startProgressTracking();
     try {
-      const d = await fetch(`/publicar-lote?cuenta=${encodeURIComponent(cuentaActiva)}`, {
+      const d = await fetch(`/publicar-lote?cuenta=${encodeURIComponent(cuentasActivas.includes('TODAS') ? 'TODAS' : cuentasActivas.join(','))}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(productosFinales),
@@ -833,14 +861,14 @@ De 8:30am A 5:30pm`;
   const handleReturnToStep3 = () => {
     if (publishResult && publishResult.errores_idx) {
       // Remover los que se publicaron con exito de selectedRows
-      const failedIndices = Object.keys(publishResult.errores_idx).map(String);
+      const failedIndices = Object.keys(publishResult.errores_idx).map(Number);
       const newSelected = new Set(failedIndices);
       
       // Update previewData to mark successful ones so they are hidden
       setPreviewData(prev => {
         if (!prev || !prev.productos) return prev;
         const newProductos = [...prev.productos];
-        const successfulIndices = Array.from(selectedRows).filter(idx => !failedIndices.includes(String(idx)));
+        const successfulIndices = Array.from(selectedRows).filter(idx => !failedIndices.includes(Number(idx)));
         successfulIndices.forEach(idx => {
            newProductos[idx] = { ...newProductos[idx], publishedSuccessfully: true };
         });
@@ -869,12 +897,15 @@ De 8:30am A 5:30pm`;
   const filteredItems = (previewData?.productos || []).map((p, idx) => ({ p, idx })).filter(item => {
     if (item.p.publishedSuccessfully) return false;
     if (!showPublished && item.p.EstadoCuentas) {
-       if (cuentaActiva === 'TODAS') {
+       if (cuentasActivas.includes('TODAS')) {
            const allExist = Object.values(item.p.EstadoCuentas).every(s => s === 'EXISTE');
            if (allExist) return false;
        } else {
-           const selectedAccount = cuentas.find(c => c.archivo === cuentaActiva)?.nombre;
-           if (selectedAccount && item.p.EstadoCuentas[selectedAccount] === 'EXISTE') return false;
+           const selectedNames = cuentas.filter(c => cuentasActivas.includes(c.archivo)).map(c => c.nombre);
+           if (selectedNames.length > 0) {
+              const allExistInSelected = selectedNames.every(name => item.p.EstadoCuentas[name] === 'EXISTE');
+              if (allExistInSelected) return false;
+           }
        }
     }
     return true;
@@ -1112,10 +1143,25 @@ De 8:30am A 5:30pm`;
               <div className="grid grid-cols-2 gap-6 mb-6">
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-1">Cuenta de MercadoLibre</label>
-                  <select className="w-full border border-slate-300 rounded-lg px-3 py-2 outline-none focus:border-emerald-500 bg-white" value={cuentaActiva} onChange={e => setCuentaActiva(e.target.value)}>
-                    <option value="TODAS">MULTICUENTA (Todas las cuentas)</option>
-                    {cuentas.map(c => <option key={c.archivo} value={c.archivo}>{c.nombre}</option>)}
-                  </select>
+                  <div className="w-full border border-slate-300 rounded-lg p-2 max-h-32 overflow-y-auto bg-white flex flex-col gap-1">
+                    <label className="flex items-center gap-2 text-sm cursor-pointer hover:bg-slate-50 p-1 rounded">
+                      <input type="checkbox" checked={cuentasActivas.includes('TODAS')} onChange={(e) => {
+                         if (e.target.checked) setCuentasActivas(['TODAS']);
+                         else setCuentasActivas([]);
+                      }} className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" /> MULTICUENTA (Todas)
+                    </label>
+                    {cuentas.map(c => (
+                      <label key={c.archivo} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-slate-50 p-1 rounded">
+                        <input type="checkbox" checked={cuentasActivas.includes(c.archivo)} onChange={(e) => {
+                          let newArr = [...cuentasActivas].filter(x => x !== 'TODAS');
+                          if (e.target.checked) newArr.push(c.archivo);
+                          else newArr = newArr.filter(x => x !== c.archivo);
+                          if (newArr.length === 0) newArr = ['TODAS'];
+                          setCuentasActivas(newArr);
+                        }} className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" /> {c.nombre}
+                      </label>
+                    ))}
+                  </div>
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-1">Archivo Excel (.xlsx, .csv)</label>
@@ -1194,7 +1240,7 @@ De 8:30am A 5:30pm`;
                           <input type="checkbox" checked={config.filtrar_duplicados === 'true'} onChange={e => setConfig(c => ({ ...c, filtrar_duplicados: e.target.checked ? 'true' : 'false' }))} className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"/>
                           Omitir articulos ya publicados en ML (Recomendado)
                         </label>
-                        <label className={`flex items-center gap-2 text-sm cursor-pointer hover:text-emerald-700 ${cuentaActiva === 'TODAS' ? 'opacity-50 pointer-events-none' : ''}`}>
+                        <label className={`flex items-center gap-2 text-sm cursor-pointer hover:text-emerald-700 ${cuentasActivas.includes('TODAS') ? 'opacity-50 pointer-events-none' : ''}`}>
                           <input type="checkbox" checked={config.verificar_todas === 'true'} onChange={e => setConfig(c => ({ ...c, verificar_todas: e.target.checked ? 'true' : 'false' }))} className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"/>
                           Solo omitir si existe en TODAS
                         </label>
@@ -1271,9 +1317,19 @@ De 8:30am A 5:30pm`;
               {/* Acciones Masivas Toolbar */}
               <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-3 flex flex-wrap items-center gap-2">
                 <span className="text-xs font-bold text-slate-500 uppercase tracking-wide mr-1">Acciones Masivas:</span>
-                <button onClick={toggleAll} className="text-xs px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold transition-colors">
-                  {selectedRows.size === (previewData?.productos?.length || 0) ? 'Deseleccionar Todo' : 'Seleccionar Todo'}
+                <button onClick={toggleCurrentPage} className="text-xs px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold transition-colors">
+                  Seleccionar Pág. Actual
                 </button>
+                <button onClick={toggleAll} className="text-xs px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold transition-colors">
+                  {selectedRows.size === filteredItems.length ? 'Deseleccionar Todo' : 'Seleccionar Todo'}
+                </button>
+                <div className="flex items-center gap-1 ml-2 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1">
+                  <span className="text-[10px] text-slate-500 font-bold uppercase">Rango:</span>
+                  <input type="number" value={rangeStart} onChange={e => setRangeStart(Number(e.target.value))} className="w-12 text-xs p-1 border border-slate-300 rounded" min="1" />
+                  <span className="text-xs text-slate-400">-</span>
+                  <input type="number" value={rangeEnd} onChange={e => setRangeEnd(Number(e.target.value))} className="w-12 text-xs p-1 border border-slate-300 rounded" min="1" />
+                  <button onClick={selectRange} className="text-xs bg-emerald-100 hover:bg-emerald-200 text-emerald-700 px-2 py-1 rounded font-bold ml-1">Aplicar</button>
+                </div>
                 <span className="text-slate-200">|</span>
                 <select value={bulkExposicion} onChange={e => setBulkExposicion(e.target.value)}
                   className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none font-medium">
@@ -1337,7 +1393,7 @@ De 8:30am A 5:30pm`;
                   <div className="min-w-[1200px] p-4">
                     {/* ENCABEZADO DE TABLA (Diseño Original) */}
                     <div className="flex bg-[#0f172a] text-white text-[10px] font-bold uppercase tracking-wider p-3 rounded-t-lg items-center gap-4 mb-2">
-                      <div className="w-4 shrink-0 flex justify-center"><input type="checkbox" checked={selectedRows.size === (previewData?.productos?.length || 0)} onChange={toggleAll} className="rounded border-slate-600 bg-slate-800 text-blue-500 focus:ring-blue-500 w-3 h-3"/></div>
+                      <div className="w-4 shrink-0 flex justify-center"><input type="checkbox" checked={paginatedItems.length > 0 && paginatedItems.every(i => selectedRows.has(i.idx))} onChange={toggleCurrentPage} className="rounded border-slate-600 bg-slate-800 text-blue-500 focus:ring-blue-500 w-3 h-3" title="Seleccionar página actual" /></div>
                       <div className="flex-1 min-w-[280px]">TÍTULO, CATEGORÍA & ESTADO POR CUENTA</div>
                       <div className="w-24 shrink-0 text-center">PRECIO $</div>
                       <div className="w-16 shrink-0 text-center">STOCK</div>
@@ -1454,24 +1510,33 @@ De 8:30am A 5:30pm`;
                     })}
                   </div>
                   <div className="flex justify-center gap-4">
-                    {previewData && (
-                      <button onClick={handleReturnToStep3}
+                    {activeTaskName === 'Sincronizando Memoria ML...' ? (
+                      <button onClick={() => { setStep(1); setPublishResult(null); setActiveTaskName(''); }}
                         className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-2.5 rounded-lg font-bold transition-colors">
-                        Volver a la tabla
+                        Volver
                       </button>
+                    ) : (
+                      <>
+                        {previewData && (
+                          <button onClick={handleReturnToStep3}
+                            className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-2.5 rounded-lg font-bold transition-colors">
+                            Volver a la tabla
+                          </button>
+                        )}
+                        <button onClick={() => { 
+                          setStep(1); 
+                          setFile(null); 
+                          setPreviewData(null); 
+                          setRowData({}); 
+                          setRawPreview([]);
+                          setHojas([]);
+                          setColumnas([]);
+                        }}
+                          className="bg-slate-200 hover:bg-slate-300 text-slate-800 px-8 py-2.5 rounded-lg font-bold transition-colors">
+                          Finalizar y Volver al inicio
+                        </button>
+                      </>
                     )}
-                    <button onClick={() => { 
-                      setStep(1); 
-                      setFile(null); 
-                      setPreviewData(null); 
-                      setRowData({}); 
-                      setRawPreview([]);
-                      setHojas([]);
-                      setColumnas([]);
-                    }}
-                      className="bg-slate-200 hover:bg-slate-300 text-slate-800 px-8 py-2.5 rounded-lg font-bold transition-colors">
-                      Finalizar y Volver al inicio
-                    </button>
                   </div>
                 </div>
               ) : (

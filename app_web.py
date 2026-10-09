@@ -368,8 +368,8 @@ def analizar_error_ml(respuesta):
                 continue
 
             # TRADUCCIONES OFICIALES AL ESPAÑOL
-            if "User has not mode me1" in msg or "Catalog has not mode" in msg:
-                errores_procesados.add("🚚 Tu cuenta o categoría NO soporta Mercado Envíos. Cambia el 'Envío' a 'Acordar con Vendedor' (⚪).")
+            if "User has not mode" in msg or "Catalog has not mode" in msg:
+                errores_procesados.add("Mercado Libre RECHAZA Mercado Envios para esta categoria/cuenta. Intenta usar 'Envio Gratis Nacional (Custom)' o 'Acordar con el Vendedor'.")
             elif "pictures are mandatory" in msg:
                 errores_procesados.add("📸 Las exposiciones Clásica/Premium exigen al menos 1 foto obligatoria.")
             elif "500 pixeles" in msg or "minimum size" in msg or "500 pixels" in msg:
@@ -426,27 +426,7 @@ def construir_atributos_dinamicos_dict(prod, attr_adicionales, headers):
             k_id_upper = str(k_id).strip().upper()
             if k_id_upper not in PROHIBIDOS and str(v_val).strip() != "":
                 val_str = str(v_val).strip()
-                
-                # Acepta cualquier símbolo como unidad, no solo letras
-                match = re.match(r'^([\d\.,]+)\s*(.*)$', val_str)
-                if match and match.group(2).strip(): 
-                    num_str = match.group(1).replace(',', '.')
-                    unidad_str = match.group(2).strip()
-                    try:
-                        num_float = float(num_str)
-                        # Le enviamos a ML la estructura EXACTA para que no bloquee
-                        lista.append({
-                            "id": k_id_upper,
-                            "value_name": val_str,
-                            "value_struct": {
-                                "number": num_float,
-                                "unit": unidad_str
-                            }
-                        })
-                        continue
-                    except ValueError:
-                        pass
-                
+                # Removemos la inyección forzada de value_struct porque causa error de tipo/esquema. ML parseará el value_name.
                 lista.append({"id": k_id_upper, "value_name": val_str})
     return lista
 
@@ -514,6 +494,8 @@ def obtener_inventario_ml(headers, nombre_perfil="Cuenta"):
                         for item in res_json:
                             if isinstance(item, dict) and item.get("code") == 200:
                                 body = item.get("body", {})
+                                if body.get("status") == "closed":
+                                    continue
                                 
                                 title = body.get("title", "").strip().lower()
                                 if title:
@@ -4389,7 +4371,7 @@ def autollenar_atributos_ia(
                 # 🟢 Forzamos visualmente el formato de la clave en el prompt
                 lineas_instrucciones.append(f'  "{aid}": "..."  // ({a.get("name")}) [{marca_req}] -> {formato_nota}')
 
-        texto_atributos = "\n".join(lineas_instrucciones[:40])
+        texto_atributos = "\n".join(lineas_instrucciones)
         errores_historicos = cargar_errores_ia(cat_id)
         historial_texto = "\n".join([f"- {e}" for e in errores_historicos[-30:]]) if errores_historicos else "Ninguno."
 
@@ -4402,16 +4384,17 @@ Tu tarea es devolver ÚNICAMENTE un objeto JSON válido. NO devuelvas texto extr
 
 REGLAS ESTRICTAS DE CLAVES JSON Y DESCRIPCION:
 - Usa EXACTAMENTE las claves en mayúsculas de la izquierda (Ej: usa "DISPLAY_SIZE", NO "Tamaño de la pantalla").
-- La primera clave debe ser "DESCRIPCION_COMERCIAL". Su valor DEBE ser un texto sumamente extenso, rico en detalles técnicos y comerciales. Debes agregar mucha más información útil sobre el producto (características clave, casos de uso, compatibilidad, ventajas). Escribe al menos 3 a 4 párrafos bien estructurados, utilizando saltos de línea (\n), viñetas y formato profesional. Las descripciones superficiales están prohibidas.
+- Tu JSON DEBE incluir la clave "DESCRIPCION_COMERCIAL". Su valor DEBE ser un texto rico en detalles técnicos y comerciales (2 o 3 párrafos cortos). Sé conciso pero preciso.
 
 REGLAS DE VALORES (EXTREMADAMENTE IMPORTANTES):
 - CONSISTENCIA TECNICA Y CRUCES DE MARCA: Si seleccionas BRAND AMD, no uses LINE Core i7, usa Ryzen. Manten coherencia estricta.
 - ATRIBUTOS OBLIGATORIOS: ¡SÍ O SÍ DEBEN SER LLENADOS! ESTÁ TERMINANTEMENTE PROHIBIDO usar "N/A", "No aplica" o dejarlos vacíos. Si la información no está explícita, debes DEDUCIRLA de forma inteligente y realista a partir del Título o el SKU. Por ejemplo, la Marca (BRAND) y el Modelo (MODEL) siempre se pueden extraer o inferir del título. ¡Todo atributo marcado como OBLIGATORIO requiere un valor válido real!
-- ATRIBUTOS OPCIONALES: Llénelos siempre que sea posible aportando valor. Si el artículo pide un número de serie, código universal, o algo sumamente específico que no se puede deducir, usa valores por defecto como "Sin serial", "No aplica" o marca que no lo tiene.
-- TIPO 'number_unit': ¡CUIDADO! No basta con escribir el número y cualquier símbolo. Debes OBLIGATORIAMENTE revisar la lista de [Unidades válidas] proporcionada en el esquema para ese atributo y elegir EXACTAMENTE uno de esos símbolos oficiales de Mercado Libre. El formato correcto es el número, un espacio y el símbolo oficial de la lista (Ej: "15.6 \"", "1 TB", "8 GB"). Si te equivocas de símbolo o lo omites, el sistema fallará.
+- ATRIBUTOS OPCIONALES: Llénelos siempre que sea posible aportando valor. Si pide número de serie o código universal y no se puede deducir, usa "Sin serial", "No aplica" o marca que no lo tiene.
+- TIPO 'number_unit': ¡CUIDADO! No basta con escribir el número y cualquier símbolo. Debes OBLIGATORIAMENTE revisar la lista de [Unidades válidas] proporcionada y elegir EXACTAMENTE uno de esos símbolos oficiales. Ej: "15.6 \"", "1 TB", "8 GB".
 
-ESQUEMA DE ATRIBUTOS PERMITIDOS (Las claves exactas de tu JSON deben ser estas):
+ESQUEMA JSON ESPERADO (Tu respuesta debe seguir esta estructura exacta):
 {{
+  "DESCRIPCION_COMERCIAL": "Escribe aquí la descripción de 2 o 3 párrafos...",
 {texto_atributos}
 }}
 
@@ -4437,21 +4420,21 @@ HISTORIAL DE RECHAZOS (APRENDE DE ESTOS FALLOS):
 
         url_openrouter = "https://openrouter.ai/api/v1/chat/completions"
         
-        max_reintentos = 6
+        max_reintentos = 3
         res_or = None
         for intento in range(max_reintentos):
             try:
-                res_or = requests.post(url_openrouter, headers=headers_or, json=payload_or, timeout=90)
+                res_or = requests.post(url_openrouter, headers=headers_or, json=payload_or, timeout=40)
                 if res_or.status_code == 200:
                     break
                 elif res_or.status_code in [400, 401, 403]:
                     break
                 else:
                     import time
-                    time.sleep((2 ** intento) + 2)
+                    time.sleep(3)
             except Exception:
                 import time
-                time.sleep((2 ** intento) + 2)
+                time.sleep(3)
 
         if not res_or or res_or.status_code != 200:
             return {"error": f"Fallo persistente IA tras {max_reintentos} intentos. Causa: ({res_or.status_code if res_or else 'Red / Timeout'})"}
@@ -4561,6 +4544,8 @@ def api_sincronizar_memoria(cuenta: str = Form("TODAS")):
     
     if cuenta == "TODAS":
         archivos = listar_archivos_token()
+    elif "," in cuenta:
+        archivos = [c.strip() for c in cuenta.split(",")]
     else:
         archivos = [cuenta]
         
@@ -4662,6 +4647,8 @@ def previsualizar_archivo(
     # 🟢 DETERMINAR QUÉ CUENTAS ESCANEAR
     if cuenta == "TODAS" or verificar_todas.lower() == "true":
         archivos_a_escanear = listar_archivos_token()
+    elif "," in cuenta:
+        archivos_a_escanear = [c.strip() for c in cuenta.split(",")]
     else:
         archivos_a_escanear = [cuenta]
 
@@ -5153,7 +5140,7 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                                 
                         else:
                             detalles = analizar_error_ml(res_bypass)
-                            logs_totales.append(f"❌ [{nombre_perfil}] Error '{titulo_original[:15]}...': {detalles}")
+                            logs_totales.append(f"❌ [{nombre_perfil}] Error (Bypass de Envío) \'{titulo_original[:15]}...\': {detalles}")
                             PROGRESO_ACTUAL["errores"] += 1
                             if idx_front is not None and str(idx_front).strip() != "": errores_interactivos[str(idx_front)] = detalles
                     else:
@@ -5810,4 +5797,5 @@ if __name__ == "__main__":
     # Creamos una ventana de aplicacion nativa de Windows
     webview.create_window("ERP Mercado Libre - MLV", "http://127.0.0.1:8000", width=1200, height=800)
     webview.start()
+
 
