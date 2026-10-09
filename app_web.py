@@ -3795,10 +3795,28 @@ def buscar_categorias_mlv(q: str):
         if res.status_code == 200:
             data = res.json()
             resultados = []
-            for item in data[:10]:
+            
+            from concurrent.futures import ThreadPoolExecutor
+            def get_path(item):
+                cat_id = item.get("category_id")
+                try:
+                    c_res = requests.get(f"{API_ML}/categories/{cat_id}", timeout=3)
+                    if c_res.status_code == 200:
+                        path_data = c_res.json().get("path_from_root", [])
+                        if path_data:
+                            return " > ".join([p["name"] for p in path_data])
+                except:
+                    pass
+                return item.get("category_name")
+
+            items = data[:15]
+            with ThreadPoolExecutor(max_workers=15) as executor:
+                paths = list(executor.map(get_path, items))
+
+            for item, path_name in zip(items, paths):
                 resultados.append({
                     "id": item.get("category_id"),
-                    "name": item.get("category_name")
+                    "name": path_name
                 })
             return resultados
     except Exception:
@@ -5103,7 +5121,7 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                     global ULTIMO_REPORTE
                     if type(ULTIMO_REPORTE) is dict and "todos" in ULTIMO_REPORTE:
                         for row_data in ULTIMO_REPORTE["todos"]:
-                            if str(row_data.get("SKU", "")) == str(sku):
+                            if str(row_data.get("SKU", "")) == str(prod.get("SKU", "")):
                                 row_data["Estado Publicación"] = f"Ya publicado"
 
                     
@@ -5144,7 +5162,7 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                             # Actualizar ULTIMO_REPORTE
                             if type(ULTIMO_REPORTE) is dict and "todos" in ULTIMO_REPORTE:
                                 for row_data in ULTIMO_REPORTE["todos"]:
-                                    if str(row_data.get("SKU", "")) == str(sku):
+                                    if str(row_data.get("SKU", "")) == str(prod.get("SKU", "")):
                                         row_data["Estado Publicación"] = f"Ya publicado"
 
                             

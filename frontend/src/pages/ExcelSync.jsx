@@ -640,10 +640,10 @@ export default function ExcelSync() {
     const items = previewData?.productos || [];
     const validIdxs = idxs.filter(i => items[i]);
     if (!validIdxs.length) return;
-    customConfirm(`Generar fichas IA para ${validIdxs.length} articulos? Se procesarn en lotes de 10.`, async () => {
+    customConfirm(`Generar fichas IA para ${validIdxs.length} articulos? Se procesarn en lotes de 6.`, async () => {
       setIaAllLoading(true);
       setIaProgress({ done: 0, total: validIdxs.length });
-      const BATCH = 3;
+      const BATCH = 6;
       for (let i = 0; i < validIdxs.length; i += BATCH) {
         const chunk = validIdxs.slice(i, i + BATCH);
         await Promise.all(chunk.map(async (idx) => {
@@ -664,7 +664,7 @@ export default function ExcelSync() {
           } catch {}
           setIaProgress(prev => ({ ...prev, done: prev.done + 1 }));
         }));
-        if (i + BATCH < validIdxs.length) await new Promise(r => setTimeout(r, 3000));
+        if (i + BATCH < validIdxs.length) await new Promise(r => setTimeout(r, 1000));
       }
       setIaAllLoading(false);
       customAlert('Autollenado IA completado!');
