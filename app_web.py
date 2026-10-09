@@ -345,7 +345,7 @@ def subir_foto_a_ml(base64_data, token):
         headers = {"Authorization": f"Bearer {token}"}
         files = {"file": (f"foto.{file_ext}", image_bytes, f"image/{file_ext}")}
         
-        res = requests.post(url, headers=headers, files=files, timeout=12)
+        res = requests.post(url, headers=headers, files=files, timeout=60)
         if res.status_code == 201:
             return res.json().get("id") 
     except Exception as e:
@@ -479,7 +479,7 @@ def obtener_inventario_ml(headers, nombre_perfil="Cuenta"):
                 ids_str = ",".join(ids_chunk)
                 url_items = f"{API_ML}/items?ids={ids_str}"
                 try:
-                    res = requests.get(url_items, headers=headers, timeout=10)
+                    res = requests.get(url_items, headers=headers, timeout=45)
                     if res.status_code == 200:
                         return res.json()
                 except: pass
@@ -4311,7 +4311,7 @@ def obtener_atributos_categoria_ml_cached(cat_id):
     url_attr = f"{API_ML}/categories/{cat_id}/attributes"
     for i in range(3):
         try:
-            res = requests.get(url_attr, timeout=10)
+            res = requests.get(url_attr, timeout=45)
             if res.status_code == 200:
                 return res.json()
         except:
@@ -4319,7 +4319,7 @@ def obtener_atributos_categoria_ml_cached(cat_id):
     return None
 
 @app.post("/api/autollenar-atributos-ia")
-def autollenar_atributos_ia(
+async def autollenar_atributos_ia(
     titulo: str = Form(...),
     cat_id: str = Form(...),
     sku: str = Form(""),
@@ -4330,7 +4330,7 @@ def autollenar_atributos_ia(
         return {"error": "Falta configurar OPENROUTER_API_KEY en tu archivo .env"}
 
     try:
-        attrs_ml = obtener_atributos_categoria_ml_cached(cat_id)
+        attrs_ml = await asyncio.to_thread(obtener_atributos_categoria_ml_cached, cat_id)
         if not attrs_ml:
             return {"error": "No se pudieron obtener los atributos de Mercado Libre tras reintentos."}
         PROHIBIDOS = {"SELLER_SKU", "PART_NUMBER", "GTIN", "ITEM_CONDITION", "HAS_COMPATIBILITIES", "MEASURE_UNIT_KEY", "INVOICE_PRODUCT_NAME", "SAT_KEY"}
@@ -4424,7 +4424,7 @@ HISTORIAL DE RECHAZOS (APRENDE DE ESTOS FALLOS):
         res_or = None
         for intento in range(max_reintentos):
             try:
-                res_or = requests.post(url_openrouter, headers=headers_or, json=payload_or, timeout=40)
+                res_or = await asyncio.to_thread(requests.post, url_openrouter, headers=headers_or, json=payload_or, timeout=40)
                 if res_or.status_code == 200:
                     break
                 elif res_or.status_code in [400, 401, 403]:
@@ -4930,7 +4930,7 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
     global PROGRESO_ACTUAL
     
     # 1. Calculamos el destino y el total una sola vez aquí arriba
-    archivos_destino = listar_archivos_token() if cuenta == "TODAS" else [cuenta]
+    archivos_destino = listar_archivos_token() if cuenta == "TODAS" else [c.strip() for c in cuenta.split(',')]
     total_items = len(productos) * len(archivos_destino) 
 
     PROGRESO_ACTUAL = {
@@ -5074,7 +5074,7 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
 
             try:
                 url_items = f"{API_ML}/items"
-                respuesta = requests.post(url_items, headers=headers, json=datos_publicacion, timeout=12)
+                respuesta = requests.post(url_items, headers=headers, json=datos_publicacion, timeout=60)
                 
                 if respuesta.status_code == 201:
                     item_data = respuesta.json()
@@ -5084,20 +5084,28 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                     time.sleep(0.5)
                     try:
                         url_desc = f"{API_ML}/items/{item_id}/description"
-                        res_desc = requests.post(url_desc, headers=headers, json=payload_desc, timeout=10)
+                        res_desc = requests.post(url_desc, headers=headers, json=payload_desc, timeout=45)
                         if res_desc.status_code not in [200, 201]:
-                            requests.put(url_desc, headers=headers, json=payload_desc, timeout=10)
+                            requests.put(url_desc, headers=headers, json=payload_desc, timeout=45)
                     except Exception as e_desc:
                         pass
 
                     try:
                         url_put = f"{API_ML}/items/{item_id}"
-                        requests.put(url_put, headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=10)
+                        requests.put(url_put, headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=45)
                     except Exception:
                         pass
                         
                     logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO! -> {permalink}")
                     PROGRESO_ACTUAL["exitos"] += 1
+                    
+                    # Actualizar ULTIMO_REPORTE
+                    global ULTIMO_REPORTE
+                    if type(ULTIMO_REPORTE) is dict and "todos" in ULTIMO_REPORTE:
+                        for row_data in ULTIMO_REPORTE["todos"]:
+                            if str(row_data.get("SKU", "")) == str(sku):
+                                row_data["Estado Publicación"] = f"Ya publicado"
+
                     
                     titulos_memoria_programa.add(titulo_norm)
                     if sku_norm and sku_norm != "nan":
@@ -5112,7 +5120,7 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                         titulo_mascarado = re.sub(r'(?i)\b(canon|hp|epson|brother|samsung|apple|sony)\b', 'Compatible', titulo_original)
                         datos_publicacion["title"] = titulo_mascarado
                         
-                        res_bypass = requests.post(url_items, headers=headers, json=datos_publicacion, timeout=12)
+                        res_bypass = requests.post(url_items, headers=headers, json=datos_publicacion, timeout=60)
                         if res_bypass.status_code == 201:
                             item_data = res_bypass.json()
                             item_id = item_data.get('id')
@@ -5121,17 +5129,24 @@ def publicar_lote(productos: list[dict], cuenta: str = "tokens_ml.json"):
                             time.sleep(0.5)
                             try:
                                 url_desc = f"{API_ML}/items/{item_id}/description"
-                                res_desc = requests.post(url_desc, headers=headers, json=payload_desc, timeout=10)
+                                res_desc = requests.post(url_desc, headers=headers, json=payload_desc, timeout=45)
                                 if res_desc.status_code not in [200, 201]:
-                                    requests.put(url_desc, headers=headers, json=payload_desc, timeout=10)
+                                    requests.put(url_desc, headers=headers, json=payload_desc, timeout=45)
                             except Exception:
                                 pass
 
                             url_put = f"{API_ML}/items/{item_id}"
-                            requests.put(url_put, headers=headers, json={"title": titulo_original}, timeout=10)
-                            requests.put(url_put, headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=10)
+                            requests.put(url_put, headers=headers, json={"title": titulo_original}, timeout=45)
+                            requests.put(url_put, headers=headers, json={"shipping": shipping_payload, "attributes": atributos_payload}, timeout=45)
                             logs_totales.append(f"✅ [{nombre_perfil}] ¡PUBLICADO (Bypass Catálogo)! -> {permalink}")
                             PROGRESO_ACTUAL["exitos"] += 1
+                            
+                            # Actualizar ULTIMO_REPORTE
+                            if type(ULTIMO_REPORTE) is dict and "todos" in ULTIMO_REPORTE:
+                                for row_data in ULTIMO_REPORTE["todos"]:
+                                    if str(row_data.get("SKU", "")) == str(sku):
+                                        row_data["Estado Publicación"] = f"Ya publicado"
+
                             
                             titulos_memoria_programa.add(titulo_norm)
                             if sku_norm and sku_norm != "nan":
@@ -5797,5 +5812,9 @@ if __name__ == "__main__":
     # Creamos una ventana de aplicacion nativa de Windows
     webview.create_window("ERP Mercado Libre - MLV", "http://127.0.0.1:8000", width=1200, height=800)
     webview.start()
+
+
+
+
 
 

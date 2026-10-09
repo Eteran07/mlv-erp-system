@@ -24,7 +24,7 @@ const SHIPPING_OPTS = [
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //  ProductRow - una fila expandible con todos los campos
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function ProductRow({ p, idx, selected, onToggle, rowData, onRowChange, onAIFill, onOpenCatSearch }) {
+function ProductRow({ p, idx, selected, onToggle, rowData, onRowChange, onAIFill, onOpenCatSearch, onDiscard }) {
   const [expanded, setExpanded] = useState(false);
   const [showDesc, setShowDesc] = useState(false);
   const [iaLoading, setIaLoading] = useState(false);
@@ -183,6 +183,10 @@ function ProductRow({ p, idx, selected, onToggle, rowData, onRowChange, onAIFill
 
         {/* Acciones rapidas */}
         <div className="flex gap-1 shrink-0">
+          <button onClick={() => onDiscard && onDiscard(idx)} title="Descartar este producto de la carga"
+            className="p-1.5 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-colors font-bold text-xs flex items-center justify-center min-w-[28px]">
+            &times;
+          </button>
           <button onClick={handleAI} disabled={iaLoading} title="Generar ficha con IA DeepSeek"
             className="p-1.5 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 disabled:opacity-50 transition-colors">
             {iaLoading ? <Loader2 size={14} className="animate-spin"/> : <Bot size={14}/>}
@@ -468,6 +472,8 @@ export default function ExcelSync() {
   const [currentPage, setCurrentPage] = useState(1);
   const [showPublished, setShowPublished] = useState(false);
   const [itemsPerPage, setItemsPerPage] = useState(10);
+  const [foldedCategories, setFoldedCategories] = useState(new Set());
+  const [discardedItems, setDiscardedItems] = useState(new Set());
 
   const [iaAllLoading, setIaAllLoading] = useState(false);
   const [iaProgress, setIaProgress] = useState({ done: 0, total: 0 });
@@ -630,35 +636,50 @@ export default function ExcelSync() {
   };
 
   // IA masiva
-  const handleAIAll = async () => {
+  const runAIBulk = async (idxs) => {
     const items = previewData?.productos || [];
-    const validIdxs = [...selectedRows].filter(i => items[i]);
+    const validIdxs = idxs.filter(i => items[i]);
     if (!validIdxs.length) return;
-    customConfirm(`Generar fichas IA para ${validIdxs.length} articulos? Se procesarán en lotes de 10.`, async () => {
-    setIaAllLoading(true);
-    setIaProgress({ done: 0, total: validIdxs.length });
-    const BATCH = 10;
-    for (let i = 0; i < validIdxs.length; i += BATCH) {
-      const chunk = validIdxs.slice(i, i + BATCH);
-      await Promise.all(chunk.map(async (idx) => {
-        const p = items[idx];
-        const rd = rowData[idx] || {};
-        const fd = new FormData();
-        fd.append('titulo', rd.titulo ?? p.Titulo);
-        fd.append('cat_id', p.Categoria_ID || '');
-        fd.append('sku', rd.sku ?? p.SKU ?? '');
-        try {
-          const res = await fetch('/api/autollenar-atributos-ia', { method: 'POST', body: fd });
-          const data = await res.json();
-          if (data.atributos || data.descripcion) onAIFill(idx, data, p.DescripcionFinal || '');
-        } catch {}
-        setIaProgress(prev => ({ ...prev, done: prev.done + 1 }));
-      }));
-      if (i + BATCH < validIdxs.length) await new Promise(r => setTimeout(r, 3000));
-    }
-    setIaAllLoading(false);
-    customAlert('Autollenado IA completado!');
+    customConfirm(`Generar fichas IA para ${validIdxs.length} articulos? Se procesarn en lotes de 10.`, async () => {
+      setIaAllLoading(true);
+      setIaProgress({ done: 0, total: validIdxs.length });
+      const BATCH = 3;
+      for (let i = 0; i < validIdxs.length; i += BATCH) {
+        const chunk = validIdxs.slice(i, i + BATCH);
+        await Promise.all(chunk.map(async (idx) => {
+          const p = items[idx];
+          const rd = rowData[idx] || {};
+          const fd = new FormData();
+          fd.append('titulo', rd.titulo ?? p.Titulo);
+          fd.append('cat_id', (rd.cat_id ?? p.Categoria_ID) || '');
+          fd.append('sku', rd.sku ?? p.SKU ?? '');
+          if (rd.errorML) fd.append('error_previo', rd.errorML);
+          try {
+            const res = await fetch('/api/autollenar-atributos-ia', { method: 'POST', body: fd });
+            const data = await res.json();
+            if (data.atributos || data.descripcion) {
+               onAIFill(idx, data, p.DescripcionFinal || '');
+               if (rd.errorML) onRowChange(idx, 'errorML', null);
+            }
+          } catch {}
+          setIaProgress(prev => ({ ...prev, done: prev.done + 1 }));
+        }));
+        if (i + BATCH < validIdxs.length) await new Promise(r => setTimeout(r, 3000));
+      }
+      setIaAllLoading(false);
+      customAlert('Autollenado IA completado!');
     });
+  };
+
+  const handleAIAll = () => runAIBulk([...selectedRows]);
+  
+  const handleAIErrors = () => {
+    let errorIdxs = [...selectedRows].filter(idx => (rowData[idx] || {}).errorML);
+    if (!errorIdxs.length) {
+      errorIdxs = filteredItems.map(i => i.idx).filter(idx => (rowData[idx] || {}).errorML);
+    }
+    if (!errorIdxs.length) return customAlert('No hay articulos con errores en esta vista.');
+    runAIBulk(errorIdxs);
   };
 
   const handleSyncMemory = async () => {
@@ -835,6 +856,7 @@ De 8:30am A 5:30pm`;
         return {
           ...p,
           idx:         originalIdx,
+          Categoria_ID: rd.cat_id ?? p.Categoria_ID,
           Titulo:      rd.titulo      ?? p.Titulo,
           Precio:      rd.precio      ?? p.Precio,
           Stock:       rd.stock       ?? p.Stock,
@@ -895,6 +917,7 @@ De 8:30am A 5:30pm`;
   const rawDataRows = rawRows.slice(1, 11);
 
   const filteredItems = (previewData?.productos || []).map((p, idx) => ({ p, idx })).filter(item => {
+    if (discardedItems.has(item.idx)) return false;
     if (item.p.publishedSuccessfully) return false;
     if (!showPublished && item.p.EstadoCuentas) {
        if (cuentasActivas.includes('TODAS')) {
@@ -940,7 +963,7 @@ De 8:30am A 5:30pm`;
   //  RENDER
   // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   return (
-    <div className="flex h-full bg-slate-50 flex-col overflow-hidden relative">
+    <div className="flex h-full bg-slate-50 flex-col overflow-hidden relative" style={{ zoom: zoomLevel / 100 }}>
 
       {/* Category Modal */}
       {showCategoryModal && (
@@ -1091,6 +1114,10 @@ De 8:30am A 5:30pm`;
                       onClick={() => {
                         onRowChange(manualCatSearch.idx, 'cat_id', c.id);
                         onRowChange(manualCatSearch.idx, 'cat_nombre', `Cat Manual: ${c.name}`);
+                          const rData = rowData[manualCatSearch.idx] || {};
+                          if (rData.errorML && rData.errorML.includes('category_id')) {
+                              onRowChange(manualCatSearch.idx, 'errorML', null);
+                          }
                         setManualCatSearch({ isOpen: false, idx: null, query: '', results: [], loading: false });
                       }}
                       className="p-3 text-left hover:bg-slate-50 border-b border-slate-100 last:border-0 flex items-center justify-between group"
@@ -1110,6 +1137,11 @@ De 8:30am A 5:30pm`;
       <div className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shrink-0">
         <h1 className="text-xl font-bold text-slate-800 flex items-center gap-2">
           <FileSpreadsheet className="text-emerald-600"/> Sincronizador Excel a MercadoLibre
+          <div className="flex items-center gap-2 ml-4 bg-slate-100 rounded-lg p-1">
+            <button onClick={() => setZoomLevel(z => Math.max(50, z - 10))} className="p-1 hover:bg-slate-200 rounded text-slate-600" title="Disminuir tamao">-</button>
+            <span className="text-xs font-mono w-10 text-center text-slate-500">{zoomLevel}%</span>
+            <button onClick={() => setZoomLevel(z => Math.min(200, z + 10))} className="p-1 hover:bg-slate-200 rounded text-slate-600" title="Aumentar tamao">+</button>
+          </div>
         </h1>
         <div className="flex items-center gap-4 text-sm font-medium">
           {[['1','Archivo'],['2','Configuracion'],['3','Previsualizacion']].map(([n, label], i) => (
@@ -1311,6 +1343,11 @@ De 8:30am A 5:30pm`;
                   <span className="text-amber-700 bg-amber-50 border border-amber-200 px-3 py-1 rounded-full">{previewData.total_omitidos} Omitidos</span>
                   <span className="text-blue-700 bg-blue-50 border border-blue-200 px-3 py-1 rounded-full">{previewData.total_leidos} Leidos</span>
                   <span className="text-slate-600 bg-slate-100 border border-slate-200 px-3 py-1 rounded-full">{selectedRows.size} Seleccionados</span>
+                  {previewData.archivo_reporte && (
+                    <a href={`/api/descargar-reporte/${previewData.archivo_reporte}`} target="_blank" rel="noreferrer" className="bg-green-600 hover:bg-green-700 text-white px-4 py-1 rounded-full text-sm font-bold shadow-sm transition-colors flex items-center gap-1.5 ml-2">
+                      <FileSpreadsheet size={16}/> Reporte Excel
+                    </a>
+                  )}
                 </div>
               </div>
 
@@ -1350,13 +1387,20 @@ De 8:30am A 5:30pm`;
                 <button onClick={handleRefreshImages} className="text-xs px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold transition-colors flex items-center gap-1">
                   <Camera size={11}/> Refrescar Fotos Locales
                 </button>
-                <span className="text-slate-200">|</span>
-                <button onClick={handleAIAll} disabled={iaAllLoading}
-                  className="text-xs px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold transition-colors flex items-center gap-1 ml-auto">
-                  {iaAllLoading
-                    ? <><Loader2 size={12} className="animate-spin"/> {iaProgress.done}/{iaProgress.total}</>
-                    : <><Bot size={12}/> Generar Fichas Masivas (IA DeepSeek)</>}
-                </button>
+                <div className="flex gap-2 ml-auto">
+                  <button onClick={handleAIErrors} disabled={iaAllLoading}
+                    className="text-xs px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-white font-semibold transition-colors flex items-center gap-1 shadow-sm">
+                    {iaAllLoading
+                      ? <><Loader2 size={12} className="animate-spin"/> {iaProgress.done}/{iaProgress.total}</>
+                      : <><Bot size={12}/> Corregir Errores</>}
+                  </button>
+                  <button onClick={handleAIAll} disabled={iaAllLoading}
+                    className="text-xs px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold transition-colors flex items-center gap-1 shadow-sm">
+                    {iaAllLoading
+                      ? <><Loader2 size={12} className="animate-spin"/> {iaProgress.done}/{iaProgress.total}</>
+                      : <><Bot size={12}/> Generar Fichas (IA)</>}
+                  </button>
+                </div>
               </div>
 
               {/* Toolbar Filtros / Paginacion */}
@@ -1416,7 +1460,7 @@ De 8:30am A 5:30pm`;
                     ) : viewMode === 'lineal' ? (
                       <div className="space-y-0 border border-t-0 border-slate-200 rounded-b-lg">
                         {paginatedItems.map(({ p, idx }) => (
-                          <ProductRow key={idx} p={p} idx={idx} selected={selectedRows.has(idx)} onToggle={toggleOne} rowData={rowData[idx] || {}} onRowChange={onRowChange} onAIFill={onAIFill} onOpenCatSearch={(i) => setManualCatSearch({ isOpen: true, idx: i, query: '', results: [], loading: false })} />
+                          <ProductRow key={idx} p={p} idx={idx} selected={selectedRows.has(idx)} onToggle={toggleOne} rowData={rowData[idx] || {}} onRowChange={onRowChange} onAIFill={onAIFill} onOpenCatSearch={(i) => setManualCatSearch({ isOpen: true, idx: i, query: '', results: [], loading: false })} onDiscard={(i) => { setDiscardedItems(prev => new Set(prev).add(i)); setSelectedRows(prev => { const n = new Set(prev); n.delete(i); return n; }); }} />
                         ))}
                       </div>
                     ) : (
@@ -1424,24 +1468,59 @@ De 8:30am A 5:30pm`;
                         {Object.entries(groupedByCategory).map(([catName, items]) => {
                           const allSel = items.every(it => selectedRows.has(it.idx));
                           return (
-                            <div key={catName}>
-                              <div className="flex items-center gap-3 px-3 py-2.5 bg-slate-100 rounded-lg mb-2 border border-slate-200">
+                            <div key={catName} className="mb-4 bg-white border border-slate-200 rounded-lg shadow-sm">
+                              <div className="flex items-center gap-3 px-3 py-2.5 bg-slate-100 rounded-t-lg border-b border-slate-200">
+                                <button onClick={() => {
+                                  setFoldedCategories(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(catName)) next.delete(catName);
+                                    else next.add(catName);
+                                    return next;
+                                  });
+                                }} className="p-1 hover:bg-slate-200 rounded text-slate-500 transition-colors">
+                                  {foldedCategories.has(catName) ? <ChevronDown size={18}/> : <ChevronUp size={18}/>}
+                                </button>
                                 <input type="checkbox" checked={allSel} onChange={() => toggleCategory(items)}
                                 className="rounded border-slate-400 text-blue-600 focus:ring-blue-500 cursor-pointer w-4 h-4"/>
-                              <span className="font-bold text-slate-800 text-sm flex-1">{catName}</span>
-                              <span className="text-xs text-slate-500 bg-white border border-slate-200 px-2 py-0.5 rounded-full">{items.length} articulos</span>
+                                <span className="font-bold text-slate-800 text-sm flex-1 cursor-pointer" onClick={() => {
+                                  setFoldedCategories(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(catName)) next.delete(catName);
+                                    else next.add(catName);
+                                    return next;
+                                  });
+                                }}>{catName}</span>
+                                <span className="text-xs text-slate-500 bg-white border border-slate-200 px-2 py-0.5 rounded-full">{items.length} articulos</span>
+                                <button onClick={() => {
+                                  customConfirm(`¿Descartar los ${items.length} artículos de la categoría "${catName}" de esta vista?`, () => {
+                                    setDiscardedItems(prev => {
+                                      const next = new Set(prev);
+                                      items.forEach(it => next.add(it.idx));
+                                      return next;
+                                    });
+                                    setSelectedRows(prev => {
+                                      const next = new Set(prev);
+                                      items.forEach(it => next.delete(it.idx));
+                                      return next;
+                                    });
+                                  });
+                                }} className="text-xs bg-red-50 text-red-600 hover:bg-red-100 px-2 py-1 rounded font-bold border border-red-200 transition-colors flex items-center gap-1" title="Descartar categoría entera">
+                                  &times; Descartar Categoría
+                                </button>
+                              </div>
+                              {!foldedCategories.has(catName) && (
+                                <div className="divide-y divide-slate-100">
+                                  {items.map(({ p, idx }) => (
+                                    <ProductRow key={idx} p={p} idx={idx} selected={selectedRows.has(idx)} onToggle={toggleOne} rowData={rowData[idx] || {}} onRowChange={onRowChange} onAIFill={onAIFill} onOpenCatSearch={(i) => setManualCatSearch({ isOpen: true, idx: i, query: '', results: [], loading: false })} onDiscard={(i) => { setDiscardedItems(prev => new Set(prev).add(i)); setSelectedRows(prev => { const n = new Set(prev); n.delete(i); return n; }); }} />
+                                  ))}
+                                </div>
+                              )}
                             </div>
-                            <div className="pl-2">
-                              {items.map(({ p, idx }) => (
-                                <ProductRow key={idx} p={p} idx={idx} selected={selectedRows.has(idx)} onToggle={toggleOne} rowData={rowData[idx] || {}} onRowChange={onRowChange} onAIFill={onAIFill} onOpenCatSearch={(i) => setManualCatSearch({ isOpen: true, idx: i, query: '', results: [], loading: false })} />
-                              ))}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 {totalPages > 1 && (
                   <div className="border-t border-slate-100 p-4 bg-slate-50 flex items-center justify-between rounded-b-xl min-w-[1200px]">
                     <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="px-4 py-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-50 text-slate-700 font-semibold text-sm shadow-sm transition-all">&larr; Anterior</button>
@@ -1523,6 +1602,11 @@ De 8:30am A 5:30pm`;
                             Volver a la tabla
                           </button>
                         )}
+                        {previewData && previewData.archivo_reporte && (
+                          <a href={`/api/descargar-reporte/${previewData.archivo_reporte}`} target="_blank" rel="noreferrer" className="bg-green-600 hover:bg-green-700 text-white px-8 py-2.5 rounded-lg font-bold transition-colors flex items-center justify-center gap-2">
+                            <FileSpreadsheet size={20}/> Reporte Excel
+                          </a>
+                        )}
                         <button onClick={() => { 
                           setStep(1); 
                           setFile(null); 
@@ -1587,6 +1671,10 @@ De 8:30am A 5:30pm`;
     </div>
   );
 }
+
+
+
+
 
 
 
